@@ -456,6 +456,115 @@ dif_result_t dif_alert_handler_configure_class(
   return kDifOk;
 }
 
+dif_result_t dif_alert_handler_get_class_configuration(
+    const dif_alert_handler_t *alert_handler,
+    dif_alert_handler_class_t alert_class,
+    dif_alert_handler_class_config_t *config,
+    dif_alert_handler_escalation_phase_t *escalation_phases,
+    dif_toggle_t *enabled, dif_toggle_t *locked) {
+  if (alert_handler == NULL || config == NULL || enabled == NULL ||
+      locked == NULL) {
+    return kDifBadArg;
+  }
+  if (escalation_phases == NULL) {
+    return kDifBadArg;
+  }
+
+#define ALERT_CLASS_CONFIG_REGS_CASE_(class_, value_)                         \
+  case kDifAlertHandlerClass##class_:                                         \
+    class_regwen_offset = ALERT_HANDLER_CLASS##class_##_REGWEN_REG_OFFSET;    \
+    ctrl_reg_offset = ALERT_HANDLER_CLASS##class_##_CTRL_SHADOWED_REG_OFFSET; \
+    accum_thresh_reg_offset =                                                 \
+        ALERT_HANDLER_CLASS##class_##_ACCUM_THRESH_SHADOWED_REG_OFFSET;       \
+    irq_deadline_reg_offset =                                                 \
+        ALERT_HANDLER_CLASS##class_##_TIMEOUT_CYC_SHADOWED_REG_OFFSET;        \
+    phase0_cycles_reg_offset =                                                \
+        ALERT_HANDLER_CLASS##class_##_PHASE0_CYC_SHADOWED_REG_OFFSET;         \
+    phase1_cycles_reg_offset =                                                \
+        ALERT_HANDLER_CLASS##class_##_PHASE1_CYC_SHADOWED_REG_OFFSET;         \
+    phase2_cycles_reg_offset =                                                \
+        ALERT_HANDLER_CLASS##class_##_PHASE2_CYC_SHADOWED_REG_OFFSET;         \
+    phase3_cycles_reg_offset =                                                \
+        ALERT_HANDLER_CLASS##class_##_PHASE3_CYC_SHADOWED_REG_OFFSET;         \
+    break;
+
+  ptrdiff_t class_regwen_offset;
+  ptrdiff_t ctrl_reg_offset;
+  ptrdiff_t accum_thresh_reg_offset;
+  ptrdiff_t irq_deadline_reg_offset;
+  ptrdiff_t phase0_cycles_reg_offset;
+  ptrdiff_t phase1_cycles_reg_offset;
+  ptrdiff_t phase2_cycles_reg_offset;
+  ptrdiff_t phase3_cycles_reg_offset;
+  switch (alert_class) {
+    LIST_OF_CLASSES(ALERT_CLASS_CONFIG_REGS_CASE_)
+    default:
+      return kDifBadArg;
+  }
+
+#undef ALERT_CLASS_CONFIG_REGS_CASE_
+
+  *locked = dif_bool_to_toggle(
+      mmio_region_read32(alert_handler->base_addr, class_regwen_offset));
+  uint32_t ctrl_reg =
+      mmio_region_read32(alert_handler->base_addr, ctrl_reg_offset);
+  *enabled = dif_bool_to_toggle(
+      bitfield_bit32_read(ctrl_reg, ALERT_HANDLER_CLASSA_CTRL_SHADOWED_EN_BIT));
+
+  // NOTE: from this point on, we assume that Class A's constants are
+  // representative of all alert class control register layouts.
+
+  // Configure the class control register and escalation phases / cycle times.
+  // Note, if an escalation phase is configured, it is also enabled.
+  config->auto_lock_accumulation_counter =
+      dif_toggle_to_bool(bitfield_bit32_read(
+          ctrl_reg, ALERT_HANDLER_CLASSA_CTRL_SHADOWED_LOCK_BIT));
+
+  config->accumulator_threshold = (uint16_t)mmio_region_read32(
+      alert_handler->base_addr, accum_thresh_reg_offset);
+  config->irq_deadline_cycles =
+      mmio_region_read32(alert_handler->base_addr, irq_deadline_reg_offset);
+
+#define LIST_OF_ESCALATION_SEVERITIES(X_) \
+  X_(0)                                   \
+  X_(1)                                   \
+  X_(2)                                   \
+  X_(3)
+
+#define ALERT_CLASS_ESCALATION_CNTRL_REGS_CASE_(value_)                        \
+  case value_:                                                                 \
+    signal_enable_bit = ALERT_HANDLER_CLASSA_CTRL_SHADOWED_EN_E##value_##_BIT; \
+    signal_map_field =                                                         \
+        ALERT_HANDLER_CLASSA_CTRL_SHADOWED_MAP_E##value_##_FIELD;              \
+    break;
+
+  bitfield_bit32_index_t signal_enable_bit;
+  bitfield_field32_t signal_map_field;
+
+  for (int i = 0; i < ALERT_HANDLER_PARAM_N_ESC_SEV; ++i) {
+    switch (i) {
+      LIST_OF_ESCALATION_SEVERITIES(ALERT_CLASS_ESCALATION_CNTRL_REGS_CASE_)
+      default:
+        // Not possible
+        break;
+    }
+
+    escalation_phases[i].phase =
+        bitfield_bit32_read(ctrl_reg, signal_enable_bit);
+    escalation_phases[i].signal =
+        bitfield_field32_read(ctrl_reg, signal_map_field);
+    escalation_phases[0].duration_cycles =
+        mmio_region_read32(alert_handler->base_addr, phase0_cycles_reg_offset);
+    escalation_phases[1].duration_cycles =
+        mmio_region_read32(alert_handler->base_addr, phase1_cycles_reg_offset);
+    escalation_phases[2].duration_cycles =
+        mmio_region_read32(alert_handler->base_addr, phase2_cycles_reg_offset);
+    escalation_phases[3].duration_cycles =
+        mmio_region_read32(alert_handler->base_addr, phase3_cycles_reg_offset);
+  }
+  return kDifOk;
+}
+
 dif_result_t dif_alert_handler_crash_dump_trigger_set(
     const dif_alert_handler_t *alert_handler,
     dif_alert_handler_class_t alert_class,

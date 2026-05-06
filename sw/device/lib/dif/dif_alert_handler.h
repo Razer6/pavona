@@ -380,6 +380,26 @@ dif_result_t dif_alert_handler_configure_class(
     dif_toggle_t locked);
 
 /**
+ * Retrieves the escalation protocol of an alert class in the alert handler.
+ *
+ * @param alert_handler An alert handler handle.
+ * @param alert_class The class to retrieve the configuration.
+ * @param[out] config The escalation protocol configuration to be updated.
+ * @param[out] escalation_phases The escalation phases configuration to be
+ *             updated.
+ * @param[out] enabled The enablement state of the class escalation protocol.
+ * @param[out] locked The locked state of the class.
+ * @return The result of the operation.
+ */
+OT_WARN_UNUSED_RESULT
+dif_result_t dif_alert_handler_get_class_configuration(
+    const dif_alert_handler_t *alert_handler,
+    dif_alert_handler_class_t alert_class,
+    dif_alert_handler_class_config_t *config,
+    dif_alert_handler_escalation_phase_t *escalation_phases,
+    dif_toggle_t *enabled, dif_toggle_t *locked);
+
+/**
  * Configures the crash dump trigger for an alert class in the alert
  * handler.
  *
