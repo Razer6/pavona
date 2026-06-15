@@ -100,6 +100,16 @@ module dma
   logic [BURST_CNT_W-1:0] rd_outstanding_q, rd_outstanding_d;
   logic [BURST_CNT_W-1:0] wr_outstanding_q, wr_outstanding_d;
 
+  // Per-TL-UL-port outstanding-transaction counters (count ALL accepted requests - reads,
+  // writes and interrupt-clear writes - minus their responses). These guarantee that a new
+  // transfer is not started while responses from a prior aborted/errored transfer are still
+  // in flight; otherwise those stale responses would be consumed by - and corrupt - the next
+  // transfer. Width holds up to NUM_MAX_OUTSTANDING_REQS in flight with margin.
+  localparam int unsigned PORT_OUTST_W = $clog2(NUM_MAX_OUTSTANDING_REQS + 2);
+  logic [PORT_OUTST_W-1:0] host_outst_q, host_outst_d;
+  logic [PORT_OUTST_W-1:0] ctn_outst_q,  ctn_outst_d;
+  logic                    dma_drained;  // no outstanding responses on either TL-UL port
+
   // Per-beat metadata FIFO (pushed at read issue, popped at read response to steer + form the
   // data FIFO entry) and the data FIFO (pushed at read response, popped at write issue).
   typedef struct packed {
@@ -193,7 +203,12 @@ module dma
   logic gated_clk_en, gated_clk;
   assign gated_clk_en = reg2hw.control.go.q       ||
                         (ctrl_state_q != DmaIdle) ||
-                        sw_reg_wr_extended;
+                        sw_reg_wr_extended         ||
+                        // Keep the core clocked while any TL-UL transaction is still
+                        // outstanding so that late responses (e.g. from an aborted/errored
+                        // transfer) are always accounted for and drained, never missed.
+                        (host_outst_q != '0)       ||
+                        (ctn_outst_q != '0);
 
   prim_clock_gating #(
     .FpgaBufGlobal(1'b0) // Instantiate a local instead of a global clock buffer on FPGAs
@@ -933,6 +948,11 @@ module dma
           // If one or more errors occurred, do not start the transfer.
           if (|next_error) begin
             ctrl_state_d = DmaError;
+          end else if (!dma_drained) begin
+            // SEC: do not issue any bus transaction until responses from a prior aborted or
+            // errored transfer have fully drained, so they cannot be consumed by - and leak
+            // into - this transfer. Wait here (no bus activity in DmaCfgValidate).
+            ctrl_state_d = DmaCfgValidate;
           end else if (fast_mode_d) begin
             // Initialise the burst datapath: read position at the start, no outstanding reqs.
             rd_byte_d        = transfer_byte_q;
@@ -1381,6 +1401,41 @@ module dma
     .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(wr_outstanding_d), .q_o(wr_outstanding_q)
   );
 
+  // Per-port outstanding-transaction counters: +1 on an accepted request, -1 on a response.
+  // Saturating, and they count reads, writes and interrupt-clear writes uniformly because all
+  // of those flow through the same host/CTN TL-UL adapters.
+  always_comb begin
+    logic host_acc, host_rsp, ctn_acc, ctn_rsp;
+    host_acc = dma_host_tlul_req_valid & dma_host_tlul_gnt;
+    host_rsp = dma_host_tlul_rsp_valid;
+    ctn_acc  = dma_ctn_tlul_req_valid & dma_ctn_tlul_gnt;
+    ctn_rsp  = dma_ctn_tlul_rsp_valid;
+
+    host_outst_d = host_outst_q;
+    if (host_acc & ~host_rsp)      host_outst_d = host_outst_q + PORT_OUTST_W'(1);
+    else if (~host_acc & host_rsp) host_outst_d = host_outst_q - PORT_OUTST_W'(1);
+
+    ctn_outst_d = ctn_outst_q;
+    if (ctn_acc & ~ctn_rsp)        ctn_outst_d = ctn_outst_q + PORT_OUTST_W'(1);
+    else if (~ctn_acc & ctn_rsp)   ctn_outst_d = ctn_outst_q - PORT_OUTST_W'(1);
+  end
+  prim_flop #(.Width(PORT_OUTST_W)) aff_host_outst (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(host_outst_d), .q_o(host_outst_q)
+  );
+  prim_flop #(.Width(PORT_OUTST_W)) aff_ctn_outst (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(ctn_outst_d), .q_o(ctn_outst_q)
+  );
+  // A new transfer may only begin once both TL-UL ports have no responses outstanding, so a
+  // prior aborted/errored transfer's late responses cannot bleed into it.
+  assign dma_drained = (host_outst_q == '0) && (ctn_outst_q == '0);
+
+  // Outstanding-counter bounds assertions (must never underflow: a response implies a prior
+  // accepted request still outstanding).
+  `ASSERT(HostOutstNoUnderflow_A, dma_host_tlul_rsp_valid |-> (host_outst_q != '0),
+          gated_clk, !rst_ni)
+  `ASSERT(CtnOutstNoUnderflow_A,  dma_ctn_tlul_rsp_valid  |-> (ctn_outst_q  != '0),
+          gated_clk, !rst_ni)
+
   // Per-beat metadata pushed at read issue, popped at read response.
   assign meta_wdata = '{
     dst_addr: dst_addr_d,
@@ -1391,7 +1446,7 @@ module dma
   prim_fifo_sync #(
     .Width($bits(dma_burst_meta_t)), .Pass(1'b0), .Depth(DMA_BURST_FIFO_DEPTH)
   ) u_burst_meta_fifo (
-    .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en),
+    .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en | (ctrl_state_q == DmaError)),
     .wvalid_i(meta_wvalid), .wready_o(meta_wready), .wdata_i(meta_wdata),
     .rvalid_o(meta_rvalid), .rready_i(meta_rready), .rdata_o(meta_rdata),
     .full_o(), .depth_o(), .err_o()
@@ -1421,7 +1476,7 @@ module dma
   prim_fifo_sync #(
     .Width($bits(dma_burst_data_t)), .Pass(1'b0), .Depth(DMA_BURST_FIFO_DEPTH)
   ) u_burst_data_fifo (
-    .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en),
+    .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en | (ctrl_state_q == DmaError)),
     .wvalid_i(data_wvalid), .wready_o(data_wready), .wdata_i(data_wdata),
     .rvalid_o(data_rvalid), .rready_i(data_rready), .rdata_o(data_rdata),
     .full_o(), .depth_o(data_depth), .err_o()
