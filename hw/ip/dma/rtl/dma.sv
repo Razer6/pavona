@@ -82,6 +82,52 @@ module dma
   logic [top_pkg::TL_DW-1:0]  read_return_data_q, read_return_data_d, dma_rsp_data;
   logic [SYS_ADDR_WIDTH-1:0]  new_src_addr, new_dst_addr;
 
+  // -------------------------------------------------------------------------------------------
+  // Read-ahead burst datapath (fast path for plain copies over TL-UL ports)
+  // -------------------------------------------------------------------------------------------
+  // A burst of back-to-back reads is issued into the data FIFO (only reads are outstanding, so
+  // their responses are unambiguous), then drained as back-to-back writes. This keeps multiple
+  // reads in flight and hides memory/bus read latency. Active only when fast_mode_q is set.
+  localparam int unsigned BURST_CNT_W = $clog2(DMA_BURST_FIFO_DEPTH + 1);
+
+  logic fast_mode_q, fast_mode_d, capture_fast_mode;
+
+  // Read-issue byte position (writes reuse transfer_byte_q for completion accounting).
+  logic [TRANSFER_BYTES_WIDTH-1:0] rd_byte_q, rd_byte_d;
+  logic                            capture_rd_byte;
+
+  // Outstanding read / write request counters for the burst datapath.
+  logic [BURST_CNT_W-1:0] rd_outstanding_q, rd_outstanding_d;
+  logic [BURST_CNT_W-1:0] wr_outstanding_q, wr_outstanding_d;
+
+  // Per-beat metadata FIFO (pushed at read issue, popped at read response to steer + form the
+  // data FIFO entry) and the data FIFO (pushed at read response, popped at write issue).
+  typedef struct packed {
+    logic [SYS_ADDR_WIDTH-1:0]  dst_addr;
+    logic [top_pkg::TL_DBW-1:0] dst_be;
+    logic [top_pkg::TL_DBW-1:0] src_be;
+    logic [2:0]                 width;
+  } dma_burst_meta_t;
+  typedef struct packed {
+    logic [top_pkg::TL_DW-1:0]  data;
+    logic [SYS_ADDR_WIDTH-1:0]  dst_addr;
+    logic [top_pkg::TL_DBW-1:0] dst_be;
+  } dma_burst_data_t;
+
+  dma_burst_meta_t meta_wdata, meta_rdata;
+  logic            meta_wvalid, meta_wready, meta_rvalid, meta_rready;
+  dma_burst_data_t data_wdata, data_rdata;
+  logic            data_wvalid, data_wready, data_rvalid, data_rready;
+  logic [BURST_CNT_W-1:0] data_depth;
+
+  // Burst control / unified bus-request intent (shared by serial and burst datapaths).
+  logic                       burst_rd_issue, burst_wr_issue;
+  logic                       rd_issue, wr_issue;
+  logic [SYS_ADDR_WIDTH-1:0]  rd_issue_addr, wr_issue_addr;
+  logic [top_pkg::TL_DBW-1:0] rd_issue_be, wr_issue_be;
+  logic [top_pkg::TL_DW-1:0]  wr_issue_data;
+  logic [top_pkg::TL_DW-1:0]  burst_steered_data;
+
   logic dma_state_error;
   // SEC_CM: FSM.SPARSE
   dma_ctrl_state_e ctrl_state_q, ctrl_state_d;
@@ -475,63 +521,90 @@ module dma
   // Note: bus signals shall be asserted only when configured and active, to ensure
   // that address and - especially - data are not leaked to other buses.
 
+  // Unified read/write request intent and payload. Driven either by the serial datapath
+  // (DmaSendRead/DmaSendWrite, from the registered setup) or the read-ahead burst datapath
+  // (DmaReadBurst issuing from the live read position; DmaWriteBurst from the data FIFO head).
+  always_comb begin
+    if (fast_mode_q && (ctrl_state_q == DmaReadBurst)) begin
+      rd_issue      = burst_rd_issue;
+      rd_issue_addr = src_addr_d;
+      rd_issue_be   = req_src_be_d;
+    end else begin
+      rd_issue      = (ctrl_state_q == DmaSendRead);
+      rd_issue_addr = src_addr_q;
+      rd_issue_be   = req_src_be_q;
+    end
+
+    if (fast_mode_q && (ctrl_state_q == DmaWriteBurst)) begin
+      wr_issue      = burst_wr_issue;
+      wr_issue_addr = data_rdata.dst_addr;
+      wr_issue_be   = data_rdata.dst_be;
+      wr_issue_data = data_rdata.data;
+    end else begin
+      wr_issue      = (ctrl_state_q == DmaSendWrite);
+      wr_issue_addr = dst_addr_q;
+      wr_issue_be   = req_dst_be_q;
+      wr_issue_data = read_return_data_q;
+    end
+  end
+
   // Host interface to OT Internal address space
   always_comb begin
-    dma_host_write = (ctrl_state_q == DmaSendWrite) & (dst_asid == OtInternalAddr);
-    dma_host_read  = (ctrl_state_q == DmaSendRead)  & (src_asid == OtInternalAddr);
+    dma_host_write = wr_issue & (dst_asid == OtInternalAddr);
+    dma_host_read  = rd_issue & (src_asid == OtInternalAddr);
 
     dma_host_tlul_req_valid = dma_host_write | dma_host_read | dma_host_clear_intr;
     // TL-UL 4B aligned
-    dma_host_tlul_req_addr  = dma_host_write ? {dst_addr_q[top_pkg::TL_AW-1:2], 2'b0} :
-                             (dma_host_read  ? {src_addr_q[top_pkg::TL_AW-1:2], 2'b0} :
+    dma_host_tlul_req_addr  = dma_host_write ? {wr_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
+                             (dma_host_read  ? {rd_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
                         (dma_host_clear_intr ? reg2hw.intr_src_addr[clear_index_q].q : 'b0));
     dma_host_tlul_req_we    = dma_host_write | dma_host_clear_intr;
-    dma_host_tlul_req_wdata = dma_host_write ? read_return_data_q :
+    dma_host_tlul_req_wdata = dma_host_write ? wr_issue_data :
                         (dma_host_clear_intr ? reg2hw.intr_src_wr_val[clear_index_q].q : 'b0);
-    dma_host_tlul_req_be    = dma_host_write ? req_dst_be_q :
-                             (dma_host_read  ? req_src_be_q
+    dma_host_tlul_req_be    = dma_host_write ? wr_issue_be :
+                             (dma_host_read  ? rd_issue_be
                                              : {top_pkg::TL_DBW{dma_host_clear_intr}});
   end
 
   // Host interface to SoC CTN address space
   always_comb begin
-    dma_ctn_write = (ctrl_state_q == DmaSendWrite) & (dst_asid == SocControlAddr);
-    dma_ctn_read  = (ctrl_state_q == DmaSendRead)  & (src_asid == SocControlAddr);
+    dma_ctn_write = wr_issue & (dst_asid == SocControlAddr);
+    dma_ctn_read  = rd_issue & (src_asid == SocControlAddr);
 
     dma_ctn_tlul_req_valid = dma_ctn_write | dma_ctn_read | dma_ctn_clear_intr;
     // TL-UL 4B aligned
-    dma_ctn_tlul_req_addr  = dma_ctn_write ? {dst_addr_q[top_pkg::TL_AW-1:2], 2'b0} :
-                            (dma_ctn_read  ? {src_addr_q[top_pkg::TL_AW-1:2], 2'b0} :
+    dma_ctn_tlul_req_addr  = dma_ctn_write ? {wr_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
+                            (dma_ctn_read  ? {rd_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
                        (dma_ctn_clear_intr ? reg2hw.intr_src_addr[clear_index_q].q : 'b0));
     dma_ctn_tlul_req_we    = dma_ctn_write | dma_ctn_clear_intr;
-    dma_ctn_tlul_req_wdata = dma_ctn_write ? read_return_data_q :
+    dma_ctn_tlul_req_wdata = dma_ctn_write ? wr_issue_data :
                        (dma_ctn_clear_intr ? reg2hw.intr_src_wr_val[clear_index_q].q : 'b0);
-    dma_ctn_tlul_req_be    = dma_ctn_write ? req_dst_be_q :
-                            (dma_ctn_read  ? req_src_be_q : {top_pkg::TL_DBW{dma_ctn_clear_intr}});
+    dma_ctn_tlul_req_be    = dma_ctn_write ? wr_issue_be :
+                            (dma_ctn_read  ? rd_issue_be : {top_pkg::TL_DBW{dma_ctn_clear_intr}});
   end
 
   // Host interface to SoC SYS address space
   always_comb begin
-    dma_sys_write = (ctrl_state_q == DmaSendWrite) & (dst_asid == SocSystemAddr);
-    dma_sys_read  = (ctrl_state_q == DmaSendRead)  & (src_asid  == SocSystemAddr);
+    dma_sys_write = wr_issue & (dst_asid == SocSystemAddr);
+    dma_sys_read  = rd_issue & (src_asid == SocSystemAddr);
 
     sys_req_d.vld_vec     [SysCmdWrite] = dma_sys_write;
     sys_req_d.metadata_vec[SysCmdWrite] = src_metadata;
     sys_req_d.opcode_vec  [SysCmdWrite] = SysOpcWrite;
     sys_req_d.iova_vec    [SysCmdWrite] = dma_sys_write ?
-                                         {dst_addr_q[(SYS_ADDR_WIDTH-1):2], 2'b0} : 'b0;
+                                         {wr_issue_addr[(SYS_ADDR_WIDTH-1):2], 2'b0} : 'b0;
     sys_req_d.racl_vec    [SysCmdWrite] = SysRaclRole;
 
-    sys_req_d.write_data = {SYS_DATA_WIDTH{dma_sys_write}} & read_return_data_q;
-    sys_req_d.write_be   = {SYS_DATA_BYTEWIDTH{dma_sys_write}} & req_dst_be_q;
+    sys_req_d.write_data = {SYS_DATA_WIDTH{dma_sys_write}} & wr_issue_data;
+    sys_req_d.write_be   = {SYS_DATA_BYTEWIDTH{dma_sys_write}} & wr_issue_be;
 
     sys_req_d.vld_vec     [SysCmdRead] = dma_sys_read;
     sys_req_d.metadata_vec[SysCmdRead] = src_metadata;
     sys_req_d.opcode_vec  [SysCmdRead] = SysOpcRead;
     sys_req_d.iova_vec    [SysCmdRead] = dma_sys_read ?
-                                         {src_addr_q[(SYS_ADDR_WIDTH-1):2], 2'b0} : 'b0;
+                                         {rd_issue_addr[(SYS_ADDR_WIDTH-1):2], 2'b0} : 'b0;
     sys_req_d.racl_vec    [SysCmdRead] = SysRaclRole;
-    sys_req_d.read_be                  = req_src_be_q;
+    sys_req_d.read_be                  = rd_issue_be;
   end
 
   // Write response muxing
@@ -607,6 +680,20 @@ module dma
     next_error   = '0;
     capture_addr = 1'b0;
     capture_be   = '0;
+
+    // Read-ahead burst datapath defaults
+    fast_mode_d       = fast_mode_q;
+    capture_fast_mode = 1'b0;
+    rd_byte_d         = rd_byte_q;
+    capture_rd_byte   = 1'b0;
+    rd_outstanding_d  = rd_outstanding_q;
+    wr_outstanding_d  = wr_outstanding_q;
+    burst_rd_issue    = 1'b0;
+    burst_wr_issue    = 1'b0;
+    meta_wvalid       = 1'b0;
+    meta_rready       = 1'b0;
+    data_wvalid       = 1'b0;
+    data_rready       = 1'b0;
 
     dma_host_clear_intr = 1'b0;
     dma_ctn_clear_intr = 1'b0;
@@ -833,9 +920,26 @@ module dma
             next_error[DmaRangeValidErr] = 1'b1;
           end
 
+          // Decide whether the read-ahead burst datapath can be used: plain copy, no inline
+          // hashing, no hardware handshake, a single chunk (chunk >= total), and both ends on
+          // TL-UL ports (OT internal / SoC control). Otherwise use the serial datapath.
+          fast_mode_d = (control_q.opcode == OpcCopy) &&
+                        !control_q.cfg_handshake_en &&
+                        (reg2hw.chunk_data_size.q >= reg2hw.total_data_size.q) &&
+                        (src_asid inside {OtInternalAddr, SocControlAddr}) &&
+                        (dst_asid inside {OtInternalAddr, SocControlAddr});
+          capture_fast_mode = 1'b1;
+
           // If one or more errors occurred, do not start the transfer.
           if (|next_error) begin
             ctrl_state_d = DmaError;
+          end else if (fast_mode_d) begin
+            // Initialise the burst datapath: read position at the start, no outstanding reqs.
+            rd_byte_d        = transfer_byte_q;
+            capture_rd_byte  = 1'b1;
+            rd_outstanding_d = '0;
+            wr_outstanding_d = '0;
+            ctrl_state_d     = DmaReadBurst;
           end else begin
             // Start the inline hashing on the very first transfer (transfer_byte_q still 0).
             if ((transfer_byte_q == '0) && use_inline_hashing) begin
@@ -943,6 +1047,95 @@ module dma
           end
         end
 
+        // Read-ahead burst: issue back-to-back reads on the source port into the data FIFO.
+        // Only reads are outstanding here, so every response is read data (no demux needed).
+        DmaReadBurst: begin
+          // Drive p_addr_be_setup for the beat currently being issued (single chunk).
+          setup_transfer_byte    = rd_byte_q;
+          setup_chunk_byte       = rd_byte_q;
+          capture_transfer_width = 1'b1;  // keep transfer_width_q valid for the write phase
+
+          // Issue another read while there are bytes left to read and the FIFO (buffered +
+          // in-flight) is not full. Acceptance is qualified by read_gnt in the bus muxing.
+          if ((rd_byte_q < reg2hw.total_data_size.q) &&
+              ((int'(data_depth) + int'(rd_outstanding_q)) < int'(DMA_BURST_FIFO_DEPTH)) &&
+              meta_wready) begin
+            burst_rd_issue = 1'b1;
+            if (read_gnt) begin
+              meta_wvalid     = 1'b1;  // push this beat's metadata
+              rd_byte_d       = rd_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_d);
+              capture_rd_byte = 1'b1;
+            end
+          end
+
+          // Read response: steer and push into the data FIFO, popping the metadata.
+          if (read_rsp_valid) begin
+            if (read_rsp_error) begin
+              next_error[DmaBusErr] = 1'b1;
+              ctrl_state_d          = DmaError;
+            end else begin
+              meta_rready = 1'b1;
+              data_wvalid = 1'b1;
+            end
+          end
+
+          // Outstanding-read update: +1 when a read is accepted, -1 when a response arrives.
+          if ((burst_rd_issue & read_gnt) & ~(read_rsp_valid & ~read_rsp_error)) begin
+            rd_outstanding_d = rd_outstanding_q + BURST_CNT_W'(1);
+          end else if (~(burst_rd_issue & read_gnt) & (read_rsp_valid & ~read_rsp_error)) begin
+            rd_outstanding_d = rd_outstanding_q - BURST_CNT_W'(1);
+          end
+
+          // Once all bytes are issued (or the FIFO filled) and every outstanding read has
+          // returned, switch to draining the writes.
+          if ((ctrl_state_d != DmaError) &&
+              ((rd_byte_q >= reg2hw.total_data_size.q) ||
+               ((int'(data_depth) + int'(rd_outstanding_q)) >= int'(DMA_BURST_FIFO_DEPTH))) &&
+              (rd_outstanding_d == '0)) begin
+            ctrl_state_d = DmaWriteBurst;
+          end
+        end
+
+        // Read-ahead burst: drain the data FIFO as back-to-back writes on the destination port.
+        DmaWriteBurst: begin
+          if (data_rvalid) begin
+            burst_wr_issue = 1'b1;
+            if (write_gnt) begin
+              data_rready = 1'b1;  // pop the entry just issued
+            end
+          end
+
+          if (write_rsp_valid) begin
+            if (write_rsp_error) begin
+              next_error[DmaBusErr] = 1'b1;
+              ctrl_state_d          = DmaError;
+            end else begin
+              transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+              capture_transfer_byte = 1'b1;
+            end
+          end
+
+          // Outstanding-write update: +1 when a write is accepted, -1 when an ack arrives.
+          if ((burst_wr_issue & write_gnt) & ~(write_rsp_valid & ~write_rsp_error)) begin
+            wr_outstanding_d = wr_outstanding_q + BURST_CNT_W'(1);
+          end else if (~(burst_wr_issue & write_gnt) & (write_rsp_valid & ~write_rsp_error)) begin
+            wr_outstanding_d = wr_outstanding_q - BURST_CNT_W'(1);
+          end
+
+          // Burst drained when the FIFO is empty and no writes remain outstanding.
+          if ((ctrl_state_d != DmaError) && !data_rvalid && (wr_outstanding_d == '0)) begin
+            if (transfer_byte_d >= reg2hw.total_data_size.q) begin
+              clear_go     = 1'b1;
+              ctrl_state_d = DmaIdle;
+            end else begin
+              // More to do: start the next read burst.
+              rd_outstanding_d = '0;
+              wr_outstanding_d = '0;
+              ctrl_state_d     = DmaReadBurst;
+            end
+          end
+        end
+
         DmaShaWait: begin
           // Still waiting for the SHA engine to consume the data
           sha2_valid = 1'b1;
@@ -1003,22 +1196,29 @@ module dma
       default:         transfer_width_d = 3'b000;
     endcase
 
-    // Source address: start on the first beat, in fixed-address mode, or for the first beat
-    // of a chunk in wrapped mode; otherwise advance from the previous beat within the chunk.
-    if ((setup_transfer_byte == '0) ||
-        reg2hw.src_config.increment.q == AddrNoIncrement ||
-        (setup_chunk_byte == '0 && reg2hw.src_config.wrap.q == AddrWrapChunk)) begin
+    // Source/destination address for the beat selected by the setup counters, computed as an
+    // absolute base+offset so it does not depend on the previous beat's registered address.
+    // This makes the computation usable both by the serial datapath (which still captures the
+    // result) and by the read-ahead burst datapath (which issues from the live position):
+    //  - fixed-address mode: always the base address;
+    //  - wrapped increment:  base + offset within the current chunk (resets each chunk);
+    //  - plain increment:    base + total transferred offset (continuous across chunks).
+    if (reg2hw.src_config.increment.q == AddrNoIncrement) begin
       src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q};
+    end else if (reg2hw.src_config.wrap.q == AddrWrapChunk) begin
+      src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} + SYS_ADDR_WIDTH'(setup_chunk_byte);
     end else begin
-      src_addr_d = src_addr_q + SYS_ADDR_WIDTH'(transfer_width_d);
+      src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} +
+                   SYS_ADDR_WIDTH'(setup_transfer_byte);
     end
 
-    if ((setup_transfer_byte == '0) ||
-        reg2hw.dst_config.increment.q == AddrNoIncrement ||
-        (setup_chunk_byte == '0 && reg2hw.dst_config.wrap.q == AddrWrapChunk)) begin
+    if (reg2hw.dst_config.increment.q == AddrNoIncrement) begin
       dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q};
+    end else if (reg2hw.dst_config.wrap.q == AddrWrapChunk) begin
+      dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} + SYS_ADDR_WIDTH'(setup_chunk_byte);
     end else begin
-      dst_addr_d = dst_addr_q + SYS_ADDR_WIDTH'(transfer_width_d);
+      dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} +
+                   SYS_ADDR_WIDTH'(setup_transfer_byte);
     end
 
     unique case (transfer_width_d)
@@ -1095,6 +1295,70 @@ module dma
     .q_o   ( read_return_data_q    )
   );
 
+  // ------------------------------------------------------------------------------------------
+  // Read-ahead burst datapath: state flops, FIFOs and per-beat steering
+  // ------------------------------------------------------------------------------------------
+  prim_flop_en #(.Width(1)) aff_fast_mode (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .en_i(capture_fast_mode),
+    .d_i(fast_mode_d), .q_o(fast_mode_q)
+  );
+  prim_flop_en #(.Width(TRANSFER_BYTES_WIDTH)) aff_rd_byte (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .en_i(capture_rd_byte),
+    .d_i(rd_byte_d), .q_o(rd_byte_q)
+  );
+  prim_flop #(.Width(BURST_CNT_W)) aff_rd_outstanding (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(rd_outstanding_d), .q_o(rd_outstanding_q)
+  );
+  prim_flop #(.Width(BURST_CNT_W)) aff_wr_outstanding (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(wr_outstanding_d), .q_o(wr_outstanding_q)
+  );
+
+  // Per-beat metadata pushed at read issue, popped at read response.
+  assign meta_wdata = '{
+    dst_addr: dst_addr_d,
+    dst_be:   req_dst_be_d,
+    src_be:   req_src_be_d,
+    width:    transfer_width_d
+  };
+  prim_fifo_sync #(
+    .Width($bits(dma_burst_meta_t)), .Pass(1'b0), .Depth(DMA_BURST_FIFO_DEPTH)
+  ) u_burst_meta_fifo (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en),
+    .wvalid_i(meta_wvalid), .wready_o(meta_wready), .wdata_i(meta_wdata),
+    .rvalid_o(meta_rvalid), .rready_i(meta_rready), .rdata_o(meta_rdata),
+    .full_o(), .depth_o(), .err_o()
+  );
+
+  // Steer the read response according to the responding beat's metadata, then push into the
+  // data FIFO together with the destination address / byte-enables / last flag.
+  always_comb begin
+    unique case (meta_rdata.width)
+      3'b001:
+        unique casez (meta_rdata.src_be)
+          4'b1???: burst_steered_data = {4{dma_rsp_data[31:24]}};
+          4'b01??: burst_steered_data = {4{dma_rsp_data[23:16]}};
+          4'b001?: burst_steered_data = {4{dma_rsp_data[15:8]}};
+          default: burst_steered_data = {4{dma_rsp_data[7:0]}};
+        endcase
+      3'b010:  burst_steered_data = {2{|meta_rdata.src_be[1:0] ? dma_rsp_data[15:0]
+                                                               : dma_rsp_data[31:16]}};
+      default: burst_steered_data = dma_rsp_data;
+    endcase
+  end
+  assign data_wdata = '{
+    data:     burst_steered_data,
+    dst_addr: meta_rdata.dst_addr,
+    dst_be:   meta_rdata.dst_be
+  };
+  prim_fifo_sync #(
+    .Width($bits(dma_burst_data_t)), .Pass(1'b0), .Depth(DMA_BURST_FIFO_DEPTH)
+  ) u_burst_data_fifo (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en),
+    .wvalid_i(data_wvalid), .wready_o(data_wready), .wdata_i(data_wdata),
+    .rvalid_o(data_rvalid), .rready_i(data_rready), .rdata_o(data_rdata),
+    .full_o(), .depth_o(data_depth), .err_o()
+  );
+
   // Mux the data for the SHA2 engine. When capturing the data we
   // can use the data from the bus, otherwise the captured data from the flop
   //
@@ -1154,6 +1418,7 @@ module dma
 
   assign data_move_state = (ctrl_state_q == DmaSendWrite)         ||
                            (ctrl_state_q == DmaWaitWriteResponse) ||
+                           (ctrl_state_q == DmaWriteBurst)        ||
                            (ctrl_state_q == DmaShaWait)           ||
                            (ctrl_state_q == DmaShaFinalize);
 
@@ -1548,7 +1813,14 @@ module dma
                             reg2hw.range_regwen.q,
                             sys_resp_q.error_vec,
                             sys_resp_q.read_metadata,
-                            sys_resp_q.grant_vec[SysCmdRead]};
+                            sys_resp_q.grant_vec[SysCmdRead],
+                            // Read-ahead burst datapath: status bits not consumed (flow is
+                            // governed by the outstanding counters and data_depth) and the
+                            // word-aligned issue-address LSBs.
+                            meta_rvalid,
+                            data_wready,
+                            rd_issue_addr[1:0],
+                            wr_issue_addr[1:0]};
 
   //////////////////////////////////////////////////////////////////////////////
   // Assertions
