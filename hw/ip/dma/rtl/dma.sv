@@ -302,6 +302,9 @@ module dma
   logic [TRANSFER_BYTES_WIDTH-1:0] transfer_remaining_bytes;
   logic [TRANSFER_BYTES_WIDTH-1:0] chunk_remaining_bytes;
   logic [TRANSFER_BYTES_WIDTH-1:0] remaining_bytes;
+  // Counters selecting which beat the address/BE setup computes (see p_addr_be_setup):
+  // either the current registered counts (first beat) or the post-advance counts (folded).
+  logic [TRANSFER_BYTES_WIDTH-1:0] setup_transfer_byte, setup_chunk_byte;
   logic                            capture_transfer_byte;
   prim_flop_en #(
     .Width(TRANSFER_BYTES_WIDTH)
@@ -591,18 +594,19 @@ module dma
     capture_chunk_byte     = 1'b0;
     chunk_byte_d           = chunk_byte_q;
     capture_transfer_width = 1'b0;
-    transfer_width_d       = '0;
     capture_return_data    = 1'b0;
     capture_state          = 1'b0;
 
+    // Address/BE/width datapath values (src_addr_d, dst_addr_d, req_*_be_d, transfer_width_d)
+    // are driven combinationally by p_addr_be_setup based on these setup counters. Default to
+    // the current registered counts (first beat of a chunk); the folded per-beat copy path
+    // overrides them with the post-advance counts.
+    setup_transfer_byte = transfer_byte_q;
+    setup_chunk_byte    = chunk_byte_q;
+
     next_error   = '0;
     capture_addr = 1'b0;
-    src_addr_d   = '0;
-    dst_addr_d   = '0;
-
     capture_be   = '0;
-    req_src_be_d = '0;
-    req_dst_be_d = '0;
 
     dma_host_clear_intr = 1'b0;
     dma_ctn_clear_intr = 1'b0;
@@ -669,7 +673,7 @@ module dma
             end
             // if not handshake start transfer
             if (!cfg_handshake_en) begin
-              ctrl_state_d = DmaAddrSetup;
+              ctrl_state_d = DmaCfgValidate;
             end else if (cfg_handshake_en && |lsio_trigger) begin
               // if handshake wait for interrupt
               if (|reg2hw.clear_intr_src.q) begin
@@ -677,7 +681,7 @@ module dma
                 clear_index_d  = '0;
                 ctrl_state_d   = DmaClearIntrSrc;
               end else begin
-                ctrl_state_d = DmaAddrSetup;
+                ctrl_state_d = DmaCfgValidate;
               end
             end
           end
@@ -702,7 +706,7 @@ module dma
                 next_error[DmaBusErr] = 1'b1;
                 ctrl_state_d = DmaError;
               end else if (32'(clear_index_q) >= (NumIntClearSources - 1)) begin
-                ctrl_state_d = DmaAddrSetup;  // Proceed now we've handled all
+                ctrl_state_d = DmaCfgValidate;  // Proceed now we've handled all
               end else begin
                 clear_index_en = 1'b1;
                 clear_index_d  = clear_index_q + INTR_CLEAR_SOURCES_WIDTH'(1'b1);
@@ -715,7 +719,7 @@ module dma
             clear_index_d  = clear_index_q + INTR_CLEAR_SOURCES_WIDTH'(1'b1);
 
             if (32'(clear_index_q) >= (NumIntClearSources - 1)) begin
-              ctrl_state_d = DmaAddrSetup;
+              ctrl_state_d = DmaCfgValidate;
             end
           end
         end
@@ -732,88 +736,26 @@ module dma
               clear_index_d  = clear_index_q + INTR_CLEAR_SOURCES_WIDTH'(1'b1);
               ctrl_state_d   = DmaClearIntrSrc;
             end else begin
-              ctrl_state_d = DmaAddrSetup;
+              ctrl_state_d = DmaCfgValidate;
             end
           end
         end
 
-        DmaAddrSetup: begin
-          capture_transfer_width = 1'b1;
-          capture_addr           = 1'b1;
-          capture_be             = 1'b1;
-          sha2_consumed_d        = 1'b0;
+        DmaCfgValidate: begin
+          // One-time configuration validation, performed once at the start of a (chunked)
+          // transfer before any bus activity. All inputs are register values or the captured
+          // `control_q`, which are locked for the duration of the transfer, so these checks
+          // need not be (and no longer are) re-evaluated per transferred word.
 
-          // Convert the `transfer_width` encoding to bytes per transaction
+          // Validate the `transfer_width` encoding (value 3 is invalid)
           unique case (reg2hw.transfer_width.q)
-            DmaXfer1BperTxn: transfer_width_d = 3'b001; // 1 byte
-            DmaXfer2BperTxn: transfer_width_d = 3'b010; // 2 bytes
-            DmaXfer4BperTxn: transfer_width_d = 3'b100; // 4 bytes
-            // Value 3 is an invalid configuration value that leads to an error
-            default: next_error[DmaSizeErr] = 1'b1;  // Invalid transfer_width
+            DmaXfer1BperTxn, DmaXfer2BperTxn, DmaXfer4BperTxn: ; // valid
+            default: next_error[DmaSizeErr] = 1'b1;
           endcase
 
-          // Use start address on first byte of transaction
-          if ((transfer_byte_q == '0) ||
-              // or when in the fixed address mode
-              reg2hw.src_config.increment.q == AddrNoIncrement ||
-              // or when transferring the first byte of a chunk and in wrapped increment mode
-              (chunk_byte_q == '0 && reg2hw.src_config.wrap.q == AddrWrapChunk)) begin
-            src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q};
-          end else begin
-            // Advance from the previous transaction within this chunk
-            src_addr_d = src_addr_q + SYS_ADDR_WIDTH'(transfer_width_d);
-          end
-
-          // Use start address on first byte of transaction
-          if ((transfer_byte_q == '0) ||
-              // or when in the fixed address mode
-              reg2hw.dst_config.increment.q == AddrNoIncrement ||
-              // or when transferring the first byte of a chunk and in wrapped increment mode
-              (chunk_byte_q == '0 && reg2hw.dst_config.wrap.q == AddrWrapChunk)) begin
-            dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q};
-          end else begin
-            // Advance from the previous transaction within this chunk
-            dst_addr_d = dst_addr_q + SYS_ADDR_WIDTH'(transfer_width_d);
-          end
-
-          unique case (transfer_width_d)
-            3'b001: begin
-              req_dst_be_d = top_pkg::TL_DBW'('b0001) << dst_addr_d[1:0];
-              req_src_be_d = top_pkg::TL_DBW'('b0001) << src_addr_d[1:0];
-            end
-            3'b010: begin
-              if (remaining_bytes >= TRANSFER_BYTES_WIDTH'(transfer_width_d)) begin
-                req_dst_be_d = top_pkg::TL_DBW'('b0011) << dst_addr_d[1:0];
-                req_src_be_d = top_pkg::TL_DBW'('b0011) << src_addr_d[1:0];
-              end else begin
-                req_dst_be_d = top_pkg::TL_DBW'('b0001) << dst_addr_d[1:0];
-                req_src_be_d = top_pkg::TL_DBW'('b0001) << src_addr_d[1:0];
-              end
-            end
-            3'b100: begin
-              if (remaining_bytes >= TRANSFER_BYTES_WIDTH'(transfer_width_d)) begin
-                req_dst_be_d = {top_pkg::TL_DBW{1'b1}};
-              end else begin
-                unique case (remaining_bytes)
-                  TRANSFER_BYTES_WIDTH'('h1): req_dst_be_d = top_pkg::TL_DBW'('b0001);
-                  TRANSFER_BYTES_WIDTH'('h2): req_dst_be_d = top_pkg::TL_DBW'('b0011);
-                  TRANSFER_BYTES_WIDTH'('h3): req_dst_be_d = top_pkg::TL_DBW'('b0111);
-                  default:                    req_dst_be_d = top_pkg::TL_DBW'('b1111);
-                endcase
-              end
-
-              req_src_be_d = req_dst_be_d;  // in the case of 4B src should always = dst
-            end
-            default: begin
-              req_dst_be_d = top_pkg::TL_DBW'('b0000);
-              req_src_be_d = top_pkg::TL_DBW'('b0000);
-            end
-          endcase
-
-          // Error checking. An invalid configuration triggers one or more errors
-          // and does not start the DMA transfer
-          if ((reg2hw.chunk_data_size.q == '0) ||         // No empty transactions
-              (reg2hw.total_data_size.q == '0)) begin     // No empty transactions
+          // No empty transactions
+          if ((reg2hw.chunk_data_size.q == '0) ||
+              (reg2hw.total_data_size.q == '0)) begin
             next_error[DmaSizeErr] = 1'b1;
           end
 
@@ -822,10 +764,8 @@ module dma
           end
 
           // Inline hashing is only allowed for 32-bit transfer width
-          if (use_inline_hashing) begin
-            if (reg2hw.transfer_width.q != DmaXfer4BperTxn) begin
-              next_error[DmaSizeErr] = 1'b1;
-            end
+          if (use_inline_hashing && (reg2hw.transfer_width.q != DmaXfer4BperTxn)) begin
+            next_error[DmaSizeErr] = 1'b1;
           end
 
           // Ensure that ASIDs have valid values
@@ -855,49 +795,37 @@ module dma
           if (reg2hw.transfer_width.q == DmaXfer2BperTxn && reg2hw.src_addr_lo.q[0]) begin
             next_error[DmaSrcAddrErr] = 1'b1;
           end
-          if (reg2hw.transfer_width.q == DmaXfer2BperTxn &&
-              reg2hw.dst_addr_lo.q[0]) begin
+          if (reg2hw.transfer_width.q == DmaXfer2BperTxn && reg2hw.dst_addr_lo.q[0]) begin
             next_error[DmaDstAddrErr] = 1'b1;
           end
 
-          // If data from the SOC system bus or the control bus is transferred
-          // to the OT internal memory, we must check if the destination address range falls into
-          // the DMA enabled memory region.
+          // If data from the SOC system bus or the control bus is transferred to the OT
+          // internal memory, the destination range must fall into the DMA-enabled region.
           if ((src_asid inside {SocControlAddr, SocSystemAddr}) && (dst_asid == OtInternalAddr) &&
-              // Out-of-bound check
               ((reg2hw.dst_addr_lo.q > control_q.enabled_memory_range_limit) ||
-                (reg2hw.dst_addr_lo.q < control_q.enabled_memory_range_base) ||
-                ((SYS_ADDR_WIDTH'(reg2hw.dst_addr_lo.q) +
-                  SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
-                  SYS_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
+               (reg2hw.dst_addr_lo.q < control_q.enabled_memory_range_base) ||
+               ((SYS_ADDR_WIDTH'(reg2hw.dst_addr_lo.q) +
+                 SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
+                 SYS_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
             next_error[DmaDstAddrErr] = 1'b1;
           end
 
-          // If data from the OT internal memory is transferred  to the SOC system bus or the
-          // control bus, we must check if the source address range falls into the
-          // DMA enabled memory region.
+          // If data from the OT internal memory is transferred to the SOC system bus or the
+          // control bus, the source range must fall into the DMA-enabled region.
           if ((dst_asid inside {SocControlAddr, SocSystemAddr}) && (src_asid == OtInternalAddr) &&
-                // Out-of-bound check
-                ((reg2hw.src_addr_lo.q > control_q.enabled_memory_range_limit) ||
-                (reg2hw.src_addr_lo.q < control_q.enabled_memory_range_base)   ||
-                ((SYS_ADDR_WIDTH'(reg2hw.src_addr_lo.q) +
-                  SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
-                  SYS_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
+              ((reg2hw.src_addr_lo.q > control_q.enabled_memory_range_limit) ||
+               (reg2hw.src_addr_lo.q < control_q.enabled_memory_range_base) ||
+               ((SYS_ADDR_WIDTH'(reg2hw.src_addr_lo.q) +
+                 SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
+                 SYS_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
             next_error[DmaSrcAddrErr] = 1'b1;
           end
 
-          // If the source ASID is the SOC control port or the OT internal port, we are accessing a
-          // 32-bit address space. Thus the upper bits of the source address must be zero
-          if ((src_asid inside {SocControlAddr, OtInternalAddr}) &&
-              (|reg2hw.src_addr_hi.q)) begin
+          // 32-bit address spaces (OT internal, SOC control) must have zero upper address bits
+          if ((src_asid inside {SocControlAddr, OtInternalAddr}) && (|reg2hw.src_addr_hi.q)) begin
             next_error[DmaSrcAddrErr] = 1'b1;
           end
-
-          // If the destination ASID is the SOC control port or the OT internal port we are
-          // accessing a 32-bit address space. Thus the upper bits of the destination address must
-          // be zero
-          if ((dst_asid inside {SocControlAddr, OtInternalAddr}) &&
-              (|reg2hw.dst_addr_hi.q)) begin
+          if ((dst_asid inside {SocControlAddr, OtInternalAddr}) && (|reg2hw.dst_addr_hi.q)) begin
             next_error[DmaDstAddrErr] = 1'b1;
           end
 
@@ -905,19 +833,29 @@ module dma
             next_error[DmaRangeValidErr] = 1'b1;
           end
 
-          // If one or more errors occurred, transition to the error state.
+          // If one or more errors occurred, do not start the transfer.
           if (|next_error) begin
             ctrl_state_d = DmaError;
           end else begin
-            // Start the inline hashing if we are in the very first transfer. This is indicated
-            // when transfer_byte_q is still 0
-            if (transfer_byte_q == '0) begin
-              if (use_inline_hashing) begin
-                sha2_hash_start = 1'b1;
-              end
+            // Start the inline hashing on the very first transfer (transfer_byte_q still 0).
+            if ((transfer_byte_q == '0) && use_inline_hashing) begin
+              sha2_hash_start = 1'b1;
             end
-            ctrl_state_d = DmaSendRead;
+            ctrl_state_d = DmaAddrSetup;
           end
+        end
+
+        DmaAddrSetup: begin
+          // First beat of a (chunked) transfer. The address/BE/width are computed
+          // combinationally by p_addr_be_setup from the default setup counters (the current
+          // registered counts); capture them and proceed to the read. Subsequent beats of a
+          // plain copy fold this setup into the write-completion cycle (see below), removing
+          // the dedicated per-word setup cycle.
+          capture_transfer_width = 1'b1;
+          capture_addr           = 1'b1;
+          capture_be             = 1'b1;
+          sha2_consumed_d        = 1'b0;
+          ctrl_state_d           = DmaSendRead;
         end
 
         DmaSendRead,
@@ -982,7 +920,19 @@ module dma
                   clear_go     = !control_q.cfg_handshake_en;
                   chunk_done   = !control_q.cfg_handshake_en;
                   ctrl_state_d = DmaIdle;
+                end else if (!use_inline_hashing) begin
+                  // Plain copy: fold the next beat's address/BE setup into this cycle using
+                  // the post-advance counts, and proceed straight to the read - removing the
+                  // dedicated DmaAddrSetup cycle per word.
+                  setup_transfer_byte    = transfer_byte_d;
+                  setup_chunk_byte       = chunk_byte_d;
+                  capture_transfer_width = 1'b1;
+                  capture_addr           = 1'b1;
+                  capture_be             = 1'b1;
+                  sha2_consumed_d        = 1'b0;
+                  ctrl_state_d           = DmaSendRead;
                 end else begin
+                  // Inline hashing: keep the dedicated setup cycle (SHA-bound path).
                   ctrl_state_d = DmaAddrSetup;
                 end
               end
@@ -1037,6 +987,72 @@ module dma
         end
       endcase
     end
+  end
+
+  // Combinational address / byte-enable / transfer-width setup for the beat selected by the
+  // setup counters. Used both for the first beat of a chunk (DmaAddrSetup, setup_* = current
+  // registered counts) and for the folded per-beat advance on the plain-copy path
+  // (setup_* = post-advance counts), so the dedicated per-word setup cycle is removed.
+  always_comb begin : p_addr_be_setup
+    // Convert the transfer-width encoding to bytes per transaction (validity checked once in
+    // DmaCfgValidate).
+    unique case (reg2hw.transfer_width.q)
+      DmaXfer1BperTxn: transfer_width_d = 3'b001;
+      DmaXfer2BperTxn: transfer_width_d = 3'b010;
+      DmaXfer4BperTxn: transfer_width_d = 3'b100;
+      default:         transfer_width_d = 3'b000;
+    endcase
+
+    // Source address: start on the first beat, in fixed-address mode, or for the first beat
+    // of a chunk in wrapped mode; otherwise advance from the previous beat within the chunk.
+    if ((setup_transfer_byte == '0) ||
+        reg2hw.src_config.increment.q == AddrNoIncrement ||
+        (setup_chunk_byte == '0 && reg2hw.src_config.wrap.q == AddrWrapChunk)) begin
+      src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q};
+    end else begin
+      src_addr_d = src_addr_q + SYS_ADDR_WIDTH'(transfer_width_d);
+    end
+
+    if ((setup_transfer_byte == '0) ||
+        reg2hw.dst_config.increment.q == AddrNoIncrement ||
+        (setup_chunk_byte == '0 && reg2hw.dst_config.wrap.q == AddrWrapChunk)) begin
+      dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q};
+    end else begin
+      dst_addr_d = dst_addr_q + SYS_ADDR_WIDTH'(transfer_width_d);
+    end
+
+    unique case (transfer_width_d)
+      3'b001: begin
+        req_dst_be_d = top_pkg::TL_DBW'('b0001) << dst_addr_d[1:0];
+        req_src_be_d = top_pkg::TL_DBW'('b0001) << src_addr_d[1:0];
+      end
+      3'b010: begin
+        if (remaining_bytes >= TRANSFER_BYTES_WIDTH'(transfer_width_d)) begin
+          req_dst_be_d = top_pkg::TL_DBW'('b0011) << dst_addr_d[1:0];
+          req_src_be_d = top_pkg::TL_DBW'('b0011) << src_addr_d[1:0];
+        end else begin
+          req_dst_be_d = top_pkg::TL_DBW'('b0001) << dst_addr_d[1:0];
+          req_src_be_d = top_pkg::TL_DBW'('b0001) << src_addr_d[1:0];
+        end
+      end
+      3'b100: begin
+        if (remaining_bytes >= TRANSFER_BYTES_WIDTH'(transfer_width_d)) begin
+          req_dst_be_d = {top_pkg::TL_DBW{1'b1}};
+        end else begin
+          unique case (remaining_bytes)
+            TRANSFER_BYTES_WIDTH'('h1): req_dst_be_d = top_pkg::TL_DBW'('b0001);
+            TRANSFER_BYTES_WIDTH'('h2): req_dst_be_d = top_pkg::TL_DBW'('b0011);
+            TRANSFER_BYTES_WIDTH'('h3): req_dst_be_d = top_pkg::TL_DBW'('b0111);
+            default:                    req_dst_be_d = top_pkg::TL_DBW'('b1111);
+          endcase
+        end
+        req_src_be_d = req_dst_be_d;  // for 4B, src strobes always equal dst
+      end
+      default: begin
+        req_dst_be_d = top_pkg::TL_DBW'('b0000);
+        req_src_be_d = top_pkg::TL_DBW'('b0000);
+      end
+    endcase
   end
 
   // Collect read data from the appropriate port.
@@ -1147,8 +1163,12 @@ module dma
   // Note that the total transfer size may be a non-integral multiple of the programmed chunk size,
   // so we must consider the `total_data_size` here too; this is important in determining the
   // correct write strobes for the final word of the transfer.
-  assign transfer_remaining_bytes = reg2hw.total_data_size.q - transfer_byte_q;
-  assign chunk_remaining_bytes = reg2hw.chunk_data_size.q - chunk_byte_q;
+  // Bytes remaining for the beat currently being set up (selected by the setup counters).
+  // These feed the byte-enable computation in p_addr_be_setup so the final, possibly partial,
+  // word of a transfer/chunk gets the correct strobes - for both the first beat and the
+  // folded per-beat advance.
+  assign transfer_remaining_bytes = reg2hw.total_data_size.q - setup_transfer_byte;
+  assign chunk_remaining_bytes = reg2hw.chunk_data_size.q - setup_chunk_byte;
   assign remaining_bytes = (transfer_remaining_bytes < chunk_remaining_bytes) ?
                             transfer_remaining_bytes : chunk_remaining_bytes;
 
