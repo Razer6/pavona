@@ -65,7 +65,7 @@ package dma_pkg;
 
 
   // Encoding generated with:
-  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 12 -n 8 \
+  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 14 -n 8 \
   //     -s 8273645 --language=sv
   //
   // Hamming distance histogram:
@@ -97,11 +97,18 @@ package dma_pkg;
     DmaError                = 8'b01010110,
     DmaShaFinalize          = 8'b00110001,
     DmaShaWait              = 8'b01111010,
-    DmaCfgValidate          = 8'b01001101
+    DmaCfgValidate          = 8'b01001101,
+    DmaReadBurst            = 8'b10000001,
+    DmaWriteBurst           = 8'b10001010
   } dma_ctrl_state_e;
 
-  // Maximum number of outstanding TL-UL requests per host post
-  parameter int unsigned NUM_MAX_OUTSTANDING_REQS = 1;
+  // Maximum number of outstanding TL-UL requests per host port. >1 enables the read-ahead
+  // burst datapath (DmaReadBurst/DmaWriteBurst) to keep multiple read requests in flight and
+  // hide memory/bus read latency.
+  parameter int unsigned NUM_MAX_OUTSTANDING_REQS = 8;
+
+  // Depth of the read-ahead data/metadata FIFOs (also the maximum read burst length).
+  parameter int unsigned DMA_BURST_FIFO_DEPTH = 8;
 
   ////////////////////////////
   // System Port Interfaces //
