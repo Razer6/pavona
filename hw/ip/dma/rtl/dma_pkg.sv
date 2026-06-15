@@ -65,7 +65,7 @@ package dma_pkg;
 
 
   // Encoding generated with:
-  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 11 -n 8 \
+  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 12 -n 8 \
   //     -s 8273645 --language=sv
   //
   // Hamming distance histogram:
@@ -73,11 +73,11 @@ package dma_pkg;
   //  0: --
   //  1: --
   //  2: --
-  //  3: ||||||||||||| (27.27%)
-  //  4: |||||||||||||||||||| (40.00%)
-  //  5: ||||||||| (18.18%)
+  //  3: |||||||||||||| (27.27%)
+  //  4: |||||||||||||||||||| (37.88%)
+  //  5: ||||||||||| (21.21%)
   //  6: |||| (9.09%)
-  //  7: || (5.45%)
+  //  7: || (4.55%)
   //  8: --
   //
   // Minimum Hamming distance: 3
@@ -96,7 +96,8 @@ package dma_pkg;
     DmaWaitWriteResponse    = 8'b11011001,
     DmaError                = 8'b01010110,
     DmaShaFinalize          = 8'b00110001,
-    DmaShaWait              = 8'b01111010
+    DmaShaWait              = 8'b01111010,
+    DmaCfgValidate          = 8'b01001101
   } dma_ctrl_state_e;
 
   // Maximum number of outstanding TL-UL requests per host post
