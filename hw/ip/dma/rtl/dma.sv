@@ -129,6 +129,7 @@ module dma
   dma_burst_data_t data_wdata, data_rdata;
   logic            data_wvalid, data_wready, data_rvalid, data_rready;
   logic [BURST_CNT_W-1:0] data_depth;
+  logic            meta_fifo_err, data_fifo_err;  // FIFO over/underflow (-> fatal alert)
 
   // Burst control / unified bus-request intent (shared by serial and burst datapaths).
   logic                       burst_rd_issue, burst_wr_issue;
@@ -244,7 +245,12 @@ module dma
   assign alerts[0]  = reg_intg_error              ||
                       dma_host_tlul_rsp_intg_err  ||
                       dma_ctn_tlul_rsp_intg_err   ||
-                      dma_state_error;
+                      dma_state_error             ||
+                      // Read-ahead FIFO over/underflow: cannot occur in normal operation (the
+                      // read-issue room gate and the abort/error drain prevent it), but is
+                      // escalated to a fatal alert as a defense-in-depth backstop.
+                      meta_fifo_err               ||
+                      data_fifo_err;
 
   for (genvar i = 0; i < NumAlerts; i++) begin : gen_alert_tx
     prim_alert_sender #(
@@ -1103,9 +1109,11 @@ module dma
           end
 
           // Outstanding-read update: +1 when a read is accepted, -1 when a response arrives.
-          if ((burst_rd_issue & read_gnt) & ~(read_rsp_valid & ~read_rsp_error)) begin
+          if ((burst_rd_issue & read_gnt) & ~(read_rsp_valid & ~read_rsp_error) &
+              (rd_outstanding_q != BURST_CNT_W'(DMA_BURST_FIFO_DEPTH))) begin
             rd_outstanding_d = rd_outstanding_q + BURST_CNT_W'(1);
-          end else if (~(burst_rd_issue & read_gnt) & (read_rsp_valid & ~read_rsp_error)) begin
+          end else if (~(burst_rd_issue & read_gnt) & (read_rsp_valid & ~read_rsp_error) &
+                       (rd_outstanding_q != '0)) begin
             rd_outstanding_d = rd_outstanding_q - BURST_CNT_W'(1);
           end
 
@@ -1139,9 +1147,11 @@ module dma
           end
 
           // Outstanding-write update: +1 when a write is accepted, -1 when an ack arrives.
-          if ((burst_wr_issue & write_gnt) & ~(write_rsp_valid & ~write_rsp_error)) begin
+          if ((burst_wr_issue & write_gnt) & ~(write_rsp_valid & ~write_rsp_error) &
+              (wr_outstanding_q != BURST_CNT_W'(DMA_BURST_FIFO_DEPTH))) begin
             wr_outstanding_d = wr_outstanding_q + BURST_CNT_W'(1);
-          end else if (~(burst_wr_issue & write_gnt) & (write_rsp_valid & ~write_rsp_error)) begin
+          end else if (~(burst_wr_issue & write_gnt) & (write_rsp_valid & ~write_rsp_error) &
+                       (wr_outstanding_q != '0)) begin
             wr_outstanding_d = wr_outstanding_q - BURST_CNT_W'(1);
           end
 
@@ -1188,9 +1198,11 @@ module dma
               data_wvalid = 1'b1;
             end
           end
-          if ((burst_rd_issue & read_gnt) & ~(read_rsp_valid & ~read_rsp_error)) begin
+          if ((burst_rd_issue & read_gnt) & ~(read_rsp_valid & ~read_rsp_error) &
+              (rd_outstanding_q != BURST_CNT_W'(DMA_BURST_FIFO_DEPTH))) begin
             rd_outstanding_d = rd_outstanding_q + BURST_CNT_W'(1);
-          end else if (~(burst_rd_issue & read_gnt) & (read_rsp_valid & ~read_rsp_error)) begin
+          end else if (~(burst_rd_issue & read_gnt) & (read_rsp_valid & ~read_rsp_error) &
+                       (rd_outstanding_q != '0)) begin
             rd_outstanding_d = rd_outstanding_q - BURST_CNT_W'(1);
           end
 
@@ -1210,9 +1222,11 @@ module dma
               capture_transfer_byte = 1'b1;
             end
           end
-          if ((burst_wr_issue & write_gnt) & ~(write_rsp_valid & ~write_rsp_error)) begin
+          if ((burst_wr_issue & write_gnt) & ~(write_rsp_valid & ~write_rsp_error) &
+              (wr_outstanding_q != BURST_CNT_W'(DMA_BURST_FIFO_DEPTH))) begin
             wr_outstanding_d = wr_outstanding_q + BURST_CNT_W'(1);
-          end else if (~(burst_wr_issue & write_gnt) & (write_rsp_valid & ~write_rsp_error)) begin
+          end else if (~(burst_wr_issue & write_gnt) & (write_rsp_valid & ~write_rsp_error) &
+                       (wr_outstanding_q != '0)) begin
             wr_outstanding_d = wr_outstanding_q - BURST_CNT_W'(1);
           end
 
@@ -1436,6 +1450,14 @@ module dma
   `ASSERT(CtnOutstNoUnderflow_A,  dma_ctn_tlul_rsp_valid  |-> (ctn_outst_q  != '0),
           gated_clk, !rst_ni)
 
+  // The DMA-enabled-range membership check (DmaCfgValidate) bounds the access using
+  // chunk_data_size; the burst path accesses total_data_size bytes. This is only safe because
+  // fast mode requires chunk_data_size >= total_data_size. Assert that invariant locally so
+  // the range-check safety is not merely emergent.
+  `ASSERT(FastModeChunkGeTotal_A,
+          fast_mode_q |-> (reg2hw.chunk_data_size.q >= reg2hw.total_data_size.q),
+          gated_clk, !rst_ni)
+
   // Per-beat metadata pushed at read issue, popped at read response.
   assign meta_wdata = '{
     dst_addr: dst_addr_d,
@@ -1449,7 +1471,7 @@ module dma
     .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en | (ctrl_state_q == DmaError)),
     .wvalid_i(meta_wvalid), .wready_o(meta_wready), .wdata_i(meta_wdata),
     .rvalid_o(meta_rvalid), .rready_i(meta_rready), .rdata_o(meta_rdata),
-    .full_o(), .depth_o(), .err_o()
+    .full_o(), .depth_o(), .err_o(meta_fifo_err)
   );
 
   // Steer the read response according to the responding beat's metadata, then push into the
@@ -1479,7 +1501,7 @@ module dma
     .clk_i(gated_clk), .rst_ni(rst_ni), .clr_i(cfg_abort_en | (ctrl_state_q == DmaError)),
     .wvalid_i(data_wvalid), .wready_o(data_wready), .wdata_i(data_wdata),
     .rvalid_o(data_rvalid), .rready_i(data_rready), .rdata_o(data_rdata),
-    .full_o(), .depth_o(data_depth), .err_o()
+    .full_o(), .depth_o(data_depth), .err_o(data_fifo_err)
   );
 
   // Mux the data for the SHA2 engine. When capturing the data we
