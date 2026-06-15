@@ -65,7 +65,7 @@ package dma_pkg;
 
 
   // Encoding generated with:
-  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 14 -n 8 \
+  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 15 -n 8 \
   //     -s 8273645 --language=sv
   //
   // Hamming distance histogram:
@@ -99,7 +99,8 @@ package dma_pkg;
     DmaShaWait              = 8'b01111010,
     DmaCfgValidate          = 8'b01001101,
     DmaReadBurst            = 8'b10000001,
-    DmaWriteBurst           = 8'b10001010
+    DmaWriteBurst           = 8'b10001010,
+    DmaRunPipe              = 8'b00011000
   } dma_ctrl_state_e;
 
   // Maximum number of outstanding TL-UL requests per host port. >1 enables the read-ahead
