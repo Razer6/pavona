@@ -525,7 +525,7 @@ module dma
   // (DmaSendRead/DmaSendWrite, from the registered setup) or the read-ahead burst datapath
   // (DmaReadBurst issuing from the live read position; DmaWriteBurst from the data FIFO head).
   always_comb begin
-    if (fast_mode_q && (ctrl_state_q == DmaReadBurst)) begin
+    if (fast_mode_q && ((ctrl_state_q == DmaReadBurst) || (ctrl_state_q == DmaRunPipe))) begin
       rd_issue      = burst_rd_issue;
       rd_issue_addr = src_addr_d;
       rd_issue_be   = req_src_be_d;
@@ -535,7 +535,7 @@ module dma
       rd_issue_be   = req_src_be_q;
     end
 
-    if (fast_mode_q && (ctrl_state_q == DmaWriteBurst)) begin
+    if (fast_mode_q && ((ctrl_state_q == DmaWriteBurst) || (ctrl_state_q == DmaRunPipe))) begin
       wr_issue      = burst_wr_issue;
       wr_issue_addr = data_rdata.dst_addr;
       wr_issue_be   = data_rdata.dst_be;
@@ -939,7 +939,10 @@ module dma
             capture_rd_byte  = 1'b1;
             rd_outstanding_d = '0;
             wr_outstanding_d = '0;
-            ctrl_state_d     = DmaReadBurst;
+            // Cross-port (source and destination on different physical ports): overlap reads
+            // and writes concurrently (DmaRunPipe). Same-port: alternate read/write bursts to
+            // keep responses unambiguous on the shared d-channel (DmaReadBurst).
+            ctrl_state_d     = (src_asid != dst_asid) ? DmaRunPipe : DmaReadBurst;
           end else begin
             // Start the inline hashing on the very first transfer (transfer_byte_q still 0).
             if ((transfer_byte_q == '0) && use_inline_hashing) begin
@@ -1133,6 +1136,71 @@ module dma
               wr_outstanding_d = '0;
               ctrl_state_d     = DmaReadBurst;
             end
+          end
+        end
+
+        // Cross-port read-ahead: reads (source port) and writes (destination port) run
+        // concurrently. The ports are distinct, so read responses and write acknowledgements
+        // arrive on separate response streams - no demux needed. Reads fill the data FIFO and
+        // writes drain it in the same cycles, fully overlapping read and write latency.
+        DmaRunPipe: begin
+          setup_transfer_byte    = rd_byte_q;
+          setup_chunk_byte       = rd_byte_q;
+          capture_transfer_width = 1'b1;
+
+          // Read side: issue while bytes remain and the FIFO (buffered + in-flight) has room.
+          if ((rd_byte_q < reg2hw.total_data_size.q) &&
+              ((int'(data_depth) + int'(rd_outstanding_q)) < int'(DMA_BURST_FIFO_DEPTH)) &&
+              meta_wready) begin
+            burst_rd_issue = 1'b1;
+            if (read_gnt) begin
+              meta_wvalid     = 1'b1;
+              rd_byte_d       = rd_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_d);
+              capture_rd_byte = 1'b1;
+            end
+          end
+          if (read_rsp_valid) begin
+            if (read_rsp_error) begin
+              next_error[DmaBusErr] = 1'b1;
+              ctrl_state_d          = DmaError;
+            end else begin
+              meta_rready = 1'b1;
+              data_wvalid = 1'b1;
+            end
+          end
+          if ((burst_rd_issue & read_gnt) & ~(read_rsp_valid & ~read_rsp_error)) begin
+            rd_outstanding_d = rd_outstanding_q + BURST_CNT_W'(1);
+          end else if (~(burst_rd_issue & read_gnt) & (read_rsp_valid & ~read_rsp_error)) begin
+            rd_outstanding_d = rd_outstanding_q - BURST_CNT_W'(1);
+          end
+
+          // Write side: drain the FIFO concurrently on the destination port.
+          if (data_rvalid) begin
+            burst_wr_issue = 1'b1;
+            if (write_gnt) begin
+              data_rready = 1'b1;
+            end
+          end
+          if (write_rsp_valid) begin
+            if (write_rsp_error) begin
+              next_error[DmaBusErr] = 1'b1;
+              ctrl_state_d          = DmaError;
+            end else begin
+              transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+              capture_transfer_byte = 1'b1;
+            end
+          end
+          if ((burst_wr_issue & write_gnt) & ~(write_rsp_valid & ~write_rsp_error)) begin
+            wr_outstanding_d = wr_outstanding_q + BURST_CNT_W'(1);
+          end else if (~(burst_wr_issue & write_gnt) & (write_rsp_valid & ~write_rsp_error)) begin
+            wr_outstanding_d = wr_outstanding_q - BURST_CNT_W'(1);
+          end
+
+          // Done when everything has been read into and drained out of the FIFO.
+          if ((ctrl_state_d != DmaError) && !data_rvalid && (wr_outstanding_d == '0) &&
+              (transfer_byte_d >= reg2hw.total_data_size.q)) begin
+            clear_go     = 1'b1;
+            ctrl_state_d = DmaIdle;
           end
         end
 
@@ -1419,6 +1487,7 @@ module dma
   assign data_move_state = (ctrl_state_q == DmaSendWrite)         ||
                            (ctrl_state_q == DmaWaitWriteResponse) ||
                            (ctrl_state_q == DmaWriteBurst)        ||
+                           (ctrl_state_q == DmaRunPipe)           ||
                            (ctrl_state_q == DmaShaWait)           ||
                            (ctrl_state_q == DmaShaFinalize);
 
