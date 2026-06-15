@@ -405,11 +405,27 @@ Two of these interfaces are TL-UL (TileLink Uncached Light) as per the register 
 
 The third host interface of the DMA controller uses a different bus specification which is described below.
 
+### Read-ahead response ordering
+
+Plain copies between the OT-internal and CTN ports may have up to
+`NUM_MAX_OUTSTANDING_REQS` reads in flight. The DMA matches responses to destination metadata
+by arrival order and does not inspect `d_source`. Responses must therefore return in request
+acceptance order across all source IDs.
+
+The OT-internal fabric provides this ordering. External CTN integrations must also guarantee
+it, set `NUM_MAX_OUTSTANDING_REQS = 1`, or add a `d_source`-indexed reorder buffer. The SYS
+port is always single-outstanding and is unaffected.
+
+Violating this requirement can pair read data with the wrong destination address and byte
+enables without raising an error.
+
 ### SoC System Bus
 
 Unlike the TL-UL ports, the SoC System Bus requires a 64-bit address space.
 The signaling is similar to that of the TL-UL bus except that read and write channels are separated.
-The DMA controller, however, presently issues only a single read or a single write request at a time.
+The DMA controller issues only a single read or a single write request at a time on the SYS
+port (the read-ahead datapath is restricted to the TL-UL OT-internal and CTN ports), so the
+SYS port is inherently order-agnostic.
 
 #### SoC System Bus Request
 

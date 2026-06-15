@@ -106,6 +106,14 @@ package dma_pkg;
   // Maximum number of outstanding TL-UL requests per host port. >1 enables the read-ahead
   // burst datapath (DmaReadBurst/DmaWriteBurst) to keep multiple read requests in flight and
   // hide memory/bus read latency.
+  //
+  // Response ordering requirement: the burst path matches read data to metadata in arrival
+  // order and does not inspect d_source. With NUM_MAX_OUTSTANDING_REQS > 1, each connected
+  // fabric must therefore return all read responses in the order their requests were accepted,
+  // across all source IDs. The OpenTitan-internal fabric provides this ordering; external
+  // integrations must guarantee it. Otherwise, set NUM_MAX_OUTSTANDING_REQS to 1 or add a
+  // d_source-indexed reorder buffer. See the read-ahead ordering section in
+  // doc/theory_of_operation.md.
   parameter int unsigned NUM_MAX_OUTSTANDING_REQS = 8;
 
   // Depth of the read-ahead data/metadata FIFOs (also the maximum read burst length).
