@@ -36,6 +36,59 @@ package dma_pkg;
     SocSystemAddr  = 4'h9
   } asid_encoding_e;
 
+  ////////////////////////////////
+  // Generic host port descriptor //
+  ////////////////////////////////
+
+  typedef enum logic [0:0] {
+    PortTlul32,
+    PortTlul64
+  } dma_port_class_e;
+
+  typedef struct packed {
+    asid_encoding_e                 asid;
+    dma_port_class_e                cls;
+    logic                           range_check;
+    logic [tlul_pkg::RsvdWidth-1:0] user_rsvd;
+  } dma_port_desc_t;
+
+  parameter dma_port_desc_t DmaPortOtInternal =
+      '{asid: OtInternalAddr, cls: PortTlul32, range_check: 1'b1, user_rsvd: '0};
+  parameter dma_port_desc_t DmaPortSocControl =
+      '{asid: SocControlAddr, cls: PortTlul32, range_check: 1'b0, user_rsvd: '0};
+  parameter dma_port_desc_t DmaPortSocSystem  =
+      '{asid: SocSystemAddr, cls: PortTlul64, range_check: 1'b0, user_rsvd: '0};
+
+  parameter int unsigned NumPortsDefault = 3;
+  parameter dma_port_desc_t DmaPortDesc [NumPortsDefault] = '{
+    DmaPortOtInternal,
+    DmaPortSocControl,
+    DmaPortSocSystem
+  };
+
+  function automatic int unsigned dma_count_class(dma_port_class_e c);
+    dma_count_class = 0;
+    for (int unsigned i = 0; i < NumPortsDefault; i++) begin
+      if (DmaPortDesc[i].cls == c) dma_count_class = dma_count_class + 1;
+    end
+  endfunction
+
+  function automatic int unsigned dma_class_subidx(int unsigned p);
+    dma_class_subidx = 0;
+    for (int unsigned i = 0; i < p; i++) begin
+      if (DmaPortDesc[i].cls == DmaPortDesc[p].cls) dma_class_subidx = dma_class_subidx + 1;
+    end
+  endfunction
+
+  parameter int unsigned NumTlul32Default = dma_count_class(PortTlul32);
+  parameter int unsigned NumTlul64Default = dma_count_class(PortTlul64);
+
+  function automatic int unsigned dma_max1(int unsigned n);
+    dma_max1 = (n > 0) ? n : 1;
+  endfunction
+
+  parameter int unsigned DmaPortIdxW = prim_util_pkg::vbits(NumPortsDefault);
+
   // Supported opcodes by the DMA
   typedef enum logic [3:0] {
     OpcCopy   = 4'h0,
@@ -102,55 +155,9 @@ package dma_pkg;
   // Maximum number of outstanding TL-UL requests per host post
   parameter int unsigned NUM_MAX_OUTSTANDING_REQS = 1;
 
-  ////////////////////////////
-  // System Port Interfaces //
-  ////////////////////////////
-
-  parameter int unsigned SYS_NUM_REQ_CH      = 2;
-  parameter int unsigned SYS_ADDR_WIDTH      = 64;
-  parameter int unsigned SYS_METADATA_WIDTH  = 3;
-  parameter int unsigned SYS_DATA_BYTEWIDTH  = 4;
-  parameter int unsigned SYS_DATA_WIDTH      = SYS_DATA_BYTEWIDTH * 8;
-  parameter int unsigned SYS_NUM_ERROR_TYPES = 1;
-
-  // Supported Opcodes on the bus
-  typedef enum logic [2:0] {
-    SysOpcRead            = 3'd0,
-    SysOpcCmoClean        = 3'd1,
-    SysOpcAtomicNoDataRsp = 3'd2,
-    SysOpcAtomicDataRsp   = 3'd3,
-    SysOpcWrite           = 3'd4,
-    SysOpcWriteOrdered    = 3'd5,
-    SysOpcMsgIntrReq      = 3'd6,
-    SysOpcMsgP2P          = 3'd7
-  } sys_opc_e;
-
-  // Request command type
-  typedef enum logic {
-    SysCmdRead  = 1'd0,
-    SysCmdWrite = 1'd1
-  } sys_cmd_type_e;
-
-  // System port request interface
-  typedef struct packed {
-    logic                     [SYS_NUM_REQ_CH-1:0]                         vld_vec;
-    logic                     [SYS_NUM_REQ_CH-1:0][SYS_METADATA_WIDTH-1:0] metadata_vec;
-    sys_opc_e                 [SYS_NUM_REQ_CH-1:0]                         opcode_vec;
-    logic                     [SYS_NUM_REQ_CH-1:0][SYS_ADDR_WIDTH-1:0]     iova_vec;
-    top_racl_pkg::racl_role_t [SYS_NUM_REQ_CH-1:0]                         racl_vec;
-    logic                     [SYS_DATA_WIDTH-1:0]                         write_data;
-    logic                     [SYS_DATA_BYTEWIDTH-1:0]                     write_be;
-    logic                     [SYS_DATA_BYTEWIDTH-1:0]                     read_be;
-  } sys_req_t;
-
-  // System port response interface
-  typedef struct packed {
-    logic [SYS_NUM_REQ_CH-1:0]         grant_vec;
-    logic                              read_data_vld;
-    logic [SYS_DATA_WIDTH-1:0]         read_data;
-    logic [SYS_METADATA_WIDTH-1:0]     read_metadata;
-    logic                              error_vld;
-    logic [SYS_NUM_ERROR_TYPES-1:0]    error_vec;
-  } sys_rsp_t;
+  // Internal address-arithmetic width. The DMA holds and increments src/dst
+  // addresses at this width; 32-bit ports truncate to top_pkg::TL_AW, 64-bit
+  // (off-bus) ports use the full width.
+  parameter int unsigned DMA_ADDR_WIDTH = 64;
 
 endpackage
