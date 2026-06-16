@@ -22,7 +22,7 @@
   scan: "true"        // Enable `scanmode_i` port
   bus_interfaces: [
     { protocol: "tlul", direction: "device", hier_path: "u_dma_reg", racl_support: true }
-    { protocol: "tlul", direction: "host", name: "host" }
+    { protocol: "tlul", direction: "host", name: "host32", count: "NumTlul32" }
   ]
   param_list: [
     { name: "NumIntClearSources",
@@ -45,24 +45,35 @@
       local: "false",
       expose: "true",
     },
-    { name: "TlUserRsvd",
-      desc: "Value of `rsvd` field in A channel of all TL-UL host ports",
-      type: "logic [tlul_pkg::RsvdWidth-1:0]"
-      default: "'0",
+    { name: "NumPorts",
+      desc: "Total number of host data ports. Override together with DmaPortDesc."
+      type: "int",
+      default: "3",
       local: "false",
       expose: "true",
     },
-    { name: "SysRaclRole",
-      desc: "RACL propagated on the Sys interface via `racl_vec`",
-      type: "top_racl_pkg::racl_role_t"
-      default: "'0",
-      local: "false",
-      expose: "true",
+    { name:                "PortDesc",
+      desc:                '''Generic host port descriptor array.
+                           Top-level connection to the host ports must follow this definition.
+                           '''
+      type:                "dma_pkg::dma_port_desc_t"
+      // unpacked_dimensions is emitted verbatim by topgen, so use the top-prefixed count name.
+      unpacked_dimensions: "[DmaNumPorts]"
+      default:             "'{dma_pkg::DmaPortOtInternal, dma_pkg::DmaPortSocControl, dma_pkg::DmaPortSocSystem}"
+      local:               "false",
+      expose:              "true",
     },
-    { name: "OtAgentId",
-      desc: "Secure Agent ID"
+    { name: "NumTlul32",
+      desc: "Number of 32-bit TLUL host ports. Per-index routing (xbar vs point-to-point) is resolved at the top level."
       type: "int unsigned"
-      default: "0",
+      default: "2",
+      local: "false",
+      expose: "true",
+    },
+    { name: "NumTlul64",
+      desc: "Number of 64-bit TLUL host ports (off-bus, point-to-point)."
+      type: "int unsigned"
+      default: "1",
       local: "false",
       expose: "true",
     },
@@ -75,27 +86,21 @@
       struct: "lsio_trigger",
       width: "1"
     }
-    { name: "sys"
-      type: "req_rsp"
-      struct: "sys"
-      package: "dma_pkg"
-      act: "req"
-      width: "1"
-      desc: "SoC System Bus (requests and responses), synchronous"
-    }
-    { struct:  "tl_h2d"
-      package: "tlul_pkg"
+    { struct:  "dma_tl_h2d"
+      package: "dma_tlul_pkg"
       type:    "uni"
-      name:    "ctn_tl_h2d"
+      name:    "host64_h2d"
       act:     "req"
-      desc:    "TL-UL host port for egress into CTN (request part), synchronous"
+      width:   "NumTlul64"
+      desc:    "64-bit TLUL host (h2d) to chip top, point-to-point"
     }
     { struct:  "tl_d2h"
       package: "tlul_pkg"
       type:    "uni"
-      name:    "ctn_tl_d2h"
+      name:    "host64_d2h"
       act:     "rcv"
-      desc:    "TL-UL host port for egress into CTN (response part), synchronous"
+      width:   "NumTlul64"
+      desc:    "64-bit TLUL host (d2h) from chip top, point-to-point"
     }
     { struct:  "racl_policy_vec",
       type:    "uni",

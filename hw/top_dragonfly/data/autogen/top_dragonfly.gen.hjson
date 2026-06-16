@@ -7491,15 +7491,6 @@
           name_top: DmaEnableRspDataIntgCheck
         }
         {
-          name: TlUserRsvd
-          desc: Value of `rsvd` field in A channel of all TL-UL host ports
-          type: logic [tlul_pkg::RsvdWidth-1:0]
-          default: "'0"
-          local: "false"
-          expose: "true"
-          name_top: DmaTlUserRsvd
-        }
-        {
           name: SysRaclRole
           desc: RACL propagated on the Sys interface via `racl_vec`
           type: top_racl_pkg::racl_role_t
