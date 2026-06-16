@@ -14,12 +14,17 @@ module dma
   parameter int unsigned                    AlertSkewCycles           = 1,
   parameter bit                             EnableDataIntgGen         = 1'b1,
   parameter bit                             EnableRspDataIntgCheck    = 1'b1,
-  parameter logic [RsvdWidth-1:0]           TlUserRsvd                = '0,
-  parameter top_racl_pkg::racl_role_t       SysRaclRole               = '0,
-  parameter int unsigned                    OtAgentId                 = 0,
   parameter bit                             EnableRacl                = 1'b0,
   parameter bit                             RaclErrorRsp              = EnableRacl,
-  parameter top_racl_pkg::racl_policy_sel_t RaclPolicySelVec[NumRegs] = '{NumRegs{0}}
+  parameter top_racl_pkg::racl_policy_sel_t RaclPolicySelVec[NumRegs] = '{NumRegs{0}},
+  // Generic host port descriptor. `NumPorts` and the `PortDesc` array default to the
+  // `dma_pkg` values and can be overridden together at the top level.
+  parameter int unsigned                    NumPorts                  = dma_pkg::NumPortsDefault,
+  parameter dma_pkg::dma_port_desc_t        PortDesc [NumPorts]       = dma_pkg::DmaPortDesc,
+  // Per-class host port counts; size the boundary port vectors and let topgen size the
+  // matching top-level nets. On override they are supplied in lock-step (checked below).
+  parameter int unsigned                    NumTlul32                 = dma_pkg::NumTlul32Default,
+  parameter int unsigned                    NumTlul64                 = dma_pkg::NumTlul64Default
 ) (
   input logic                                       clk_i,
   input logic                                       rst_ni,
@@ -38,15 +43,13 @@ module dma
   // Device port
   input   tlul_pkg::tl_h2d_t                        tl_d_i,
   output  tlul_pkg::tl_d2h_t                        tl_d_o,
-  // Facing CTN
-  input   tlul_pkg::tl_d2h_t                        ctn_tl_d2h_i,
-  output  tlul_pkg::tl_h2d_t                        ctn_tl_h2d_o,
-  // Host port
-  input   tlul_pkg::tl_d2h_t                        host_tl_h_i,
-  output  tlul_pkg::tl_h2d_t                        host_tl_h_o,
-  // System port
-  input  dma_pkg::sys_rsp_t                         sys_i,
-  output dma_pkg::sys_req_t                         sys_o
+  // 32-bit TLUL host ports; xbar-vs-p2p routing is resolved at the top level. Width is
+  // clamped to >= 1 so a zero count yields a single tied-off placeholder port.
+  output  tlul_pkg::tl_h2d_t         [dma_pkg::dma_max1(NumTlul32)-1:0] host32_tl_h_o,
+  input   tlul_pkg::tl_d2h_t         [dma_pkg::dma_max1(NumTlul32)-1:0] host32_tl_h_i,
+  // 64-bit TLUL host ports (off-bus, point-to-point)
+  output  dma_tlul_pkg::dma_tl_h2d_t [dma_pkg::dma_max1(NumTlul64)-1:0] host64_h2d_o,
+  input   tlul_pkg::tl_d2h_t         [dma_pkg::dma_max1(NumTlul64)-1:0] host64_d2h_i
 );
   import prim_mubi_pkg::*;
   import prim_sha2_pkg::*;
@@ -58,29 +61,54 @@ module dma
   localparam int unsigned INTR_CLEAR_SOURCES_WIDTH = $clog2(NumIntClearSources);
   localparam int unsigned NR_SHA_DIGEST_ELEMENTS  = 16;
 
-  // Flopped bus for SYS interface
-  dma_pkg::sys_req_t sys_req_d;
-  dma_pkg::sys_rsp_t sys_resp_q;
+  // Port-index width derived from the (possibly-overridden) module `NumPorts`, rather than
+  // dma_pkg::DmaPortIdxW which is fixed to the package-default port count.
+  localparam int unsigned PortIdxW = prim_util_pkg::vbits(NumPorts);
 
-  // Signals for both TL interfaces
-  logic                       dma_host_tlul_req_valid,    dma_ctn_tlul_req_valid;
-  logic [top_pkg::TL_AW-1:0]  dma_host_tlul_req_addr,     dma_ctn_tlul_req_addr;
-  logic                       dma_host_tlul_req_we,       dma_ctn_tlul_req_we;
-  logic [top_pkg::TL_DW-1:0]  dma_host_tlul_req_wdata,    dma_ctn_tlul_req_wdata;
-  logic [top_pkg::TL_DBW-1:0] dma_host_tlul_req_be,       dma_ctn_tlul_req_be;
-  logic                       dma_host_tlul_gnt,          dma_ctn_tlul_gnt;
-  logic                       dma_host_tlul_rsp_valid,    dma_ctn_tlul_rsp_valid;
-  logic [top_pkg::TL_DW-1:0]  dma_host_tlul_rsp_data,     dma_ctn_tlul_rsp_data;
-  logic                       dma_host_tlul_rsp_err,      dma_ctn_tlul_rsp_err;
-  logic                       dma_host_tlul_rsp_intg_err, dma_ctn_tlul_rsp_intg_err;
+  // Module-local descriptor helpers indexing the module parameter `PortDesc` directly so
+  // they constant-fold in generate/`ASSERT_INIT` contexts (the `dma_pkg` versions take an
+  // open array and serve block-level DV on the package-default descriptor).
+  function automatic int unsigned dma_count_class_local(dma_pkg::dma_port_class_e cls);
+    dma_count_class_local = 0;
+    for (int unsigned i = 0; i < NumPorts; i++) begin
+      if (PortDesc[i].cls == cls) dma_count_class_local = dma_count_class_local + 1;
+    end
+  endfunction
 
-  logic                       dma_host_write, dma_host_read, dma_host_clear_intr;
-  logic                       dma_ctn_write,  dma_ctn_read,  dma_ctn_clear_intr;
-  logic                       dma_sys_write,  dma_sys_read;
+  function automatic int unsigned dma_class_subidx_local(int unsigned p);
+    dma_class_subidx_local = 0;
+    for (int unsigned i = 0; i < p; i++) begin
+      if (PortDesc[i].cls == PortDesc[p].cls) dma_class_subidx_local = dma_class_subidx_local + 1;
+    end
+  endfunction
+
+  // Count how many ports in `PortDesc` carry a given ASID. Used by elaboration-time
+  // assertions guarding the interrupt-clear port lookup, which requires both the
+  // OT-internal and SoC-control ASIDs to be present in `PortDesc`.
+  function automatic int unsigned dma_count_asid_local(dma_pkg::asid_encoding_e asid);
+    dma_count_asid_local = 0;
+    for (int unsigned i = 0; i < NumPorts; i++) begin
+      if (PortDesc[i].asid == asid) dma_count_asid_local = dma_count_asid_local + 1;
+    end
+  endfunction
+
+  // Unified per-port signals feeding the class-agnostic FSM. The generate loop below
+  // routes each port to its boundary array (32-bit or 64-bit) by its descriptor class.
+  logic [NumPorts-1:0]                      port_req, port_we, port_gnt;
+  logic [NumPorts-1:0]                      port_rvalid, port_err, port_intg_err;
+  logic [NumPorts-1:0][DMA_ADDR_WIDTH-1:0]  port_addr;
+  logic [NumPorts-1:0][top_pkg::TL_DW-1:0]  port_wdata, port_rdata;
+  logic [NumPorts-1:0][top_pkg::TL_DBW-1:0] port_be;
+
+  // Aggregated TL-UL response integrity error (OR-reduced over all host ports).
+  logic dma_tlul_rsp_intg_err;
+
+  // Unified interrupt-clear trigger (resolved index selects the target port).
+  logic                       dma_clear_intr;
 
   logic                       capture_return_data;
   logic [top_pkg::TL_DW-1:0]  read_return_data_q, read_return_data_d, dma_rsp_data;
-  logic [SYS_ADDR_WIDTH-1:0]  new_src_addr, new_dst_addr;
+  logic [DMA_ADDR_WIDTH-1:0]  new_src_addr, new_dst_addr;
 
   // -------------------------------------------------------------------------------------------
   // Read-ahead burst datapath (fast path for plain copies over TL-UL ports)
@@ -106,21 +134,20 @@ module dma
   // in flight; otherwise those stale responses would be consumed by - and corrupt - the next
   // transfer. Width holds up to NUM_MAX_OUTSTANDING_REQS in flight with margin.
   localparam int unsigned PORT_OUTST_W = $clog2(NUM_MAX_OUTSTANDING_REQS + 2);
-  logic [PORT_OUTST_W-1:0] host_outst_q, host_outst_d;
-  logic [PORT_OUTST_W-1:0] ctn_outst_q,  ctn_outst_d;
-  logic                    dma_drained;  // no outstanding responses on either TL-UL port
+  logic [NumPorts-1:0][PORT_OUTST_W-1:0] port_outst_q, port_outst_d;
+  logic                                      dma_drained;
 
   // Per-beat metadata FIFO (pushed at read issue, popped at read response to steer + form the
   // data FIFO entry) and the data FIFO (pushed at read response, popped at write issue).
   typedef struct packed {
-    logic [SYS_ADDR_WIDTH-1:0]  dst_addr;
+    logic [DMA_ADDR_WIDTH-1:0]  dst_addr;
     logic [top_pkg::TL_DBW-1:0] dst_be;
     logic [top_pkg::TL_DBW-1:0] src_be;
     logic [2:0]                 width;
   } dma_burst_meta_t;
   typedef struct packed {
     logic [top_pkg::TL_DW-1:0]  data;
-    logic [SYS_ADDR_WIDTH-1:0]  dst_addr;
+    logic [DMA_ADDR_WIDTH-1:0]  dst_addr;
     logic [top_pkg::TL_DBW-1:0] dst_be;
   } dma_burst_data_t;
 
@@ -134,7 +161,7 @@ module dma
   // Burst control / unified bus-request intent (shared by serial and burst datapaths).
   logic                       burst_rd_issue, burst_wr_issue;
   logic                       rd_issue, wr_issue;
-  logic [SYS_ADDR_WIDTH-1:0]  rd_issue_addr, wr_issue_addr;
+  logic [DMA_ADDR_WIDTH-1:0]  rd_issue_addr, wr_issue_addr;
   logic [top_pkg::TL_DBW-1:0] rd_issue_be, wr_issue_be;
   logic [top_pkg::TL_DW-1:0]  wr_issue_data;
   logic [top_pkg::TL_DW-1:0]  burst_steered_data;
@@ -171,9 +198,6 @@ module dma
 
   logic cfg_handshake_en;
 
-  logic [SYS_METADATA_WIDTH-1:0] src_metadata;
-  assign src_metadata = SYS_METADATA_WIDTH'(1'b1) << OtAgentId;
-
   // Decode scan mode enable MuBi signal.
   logic scanmode;
   assign scanmode = mubi4_test_true_strict(scanmode_i);
@@ -208,8 +232,7 @@ module dma
                         // Keep the core clocked while any TL-UL transaction is still
                         // outstanding so that late responses (e.g. from an aborted/errored
                         // transfer) are always accounted for and drained, never missed.
-                        (host_outst_q != '0)       ||
-                        (ctn_outst_q != '0);
+                        (|port_outst_q);
 
   prim_clock_gating #(
     .FpgaBufGlobal(1'b0) // Instantiate a local instead of a global clock buffer on FPGAs
@@ -242,10 +265,9 @@ module dma
   // Alerts
   logic [NumAlerts-1:0] alert_test, alerts;
   assign alert_test = {reg2hw.alert_test.q & reg2hw.alert_test.qe};
-  assign alerts[0]  = reg_intg_error              ||
-                      dma_host_tlul_rsp_intg_err  ||
-                      dma_ctn_tlul_rsp_intg_err   ||
-                      dma_state_error             ||
+  assign alerts[0]  = reg_intg_error          ||
+                      dma_tlul_rsp_intg_err   ||
+                      dma_state_error         ||
                       // Read-ahead FIFO over/underflow: cannot occur in normal operation (the
                       // read-issue room gate and the abort/error drain prevent it), but is
                       // escalated to a fatal alert as a defense-in-depth backstop.
@@ -269,59 +291,82 @@ module dma
     );
   end
 
-  // Adapter from the DMA to Host
-  tlul_adapter_host #(
-    .MAX_REQS(NUM_MAX_OUTSTANDING_REQS),
-    .EnableDataIntgGen(EnableDataIntgGen),
-    .EnableRspDataIntgCheck(EnableRspDataIntgCheck)
-  ) u_dma_host_tlul_host (
-    .clk_i          ( gated_clk                        ),
-    .rst_ni         ( rst_ni                           ),
-    // do not make a request unless there is room for the response
-    .req_i          ( dma_host_tlul_req_valid          ),
-    .gnt_o          ( dma_host_tlul_gnt                ),
-    .addr_i         ( dma_host_tlul_req_addr           ),
-    .we_i           ( dma_host_tlul_req_we             ),
-    .wdata_i        ( dma_host_tlul_req_wdata          ),
-    .wdata_intg_i   ( TL_A_USER_DEFAULT.data_intg      ),
-    .be_i           ( dma_host_tlul_req_be             ),
-    .instr_type_i   ( MuBi4False                       ),
-    .user_rsvd_i    ( TlUserRsvd                       ),
-    .valid_o        ( dma_host_tlul_rsp_valid          ),
-    .rdata_o        ( dma_host_tlul_rsp_data           ),
-    .rdata_intg_o   (                                  ),
-    .err_o          ( dma_host_tlul_rsp_err            ),
-    .intg_err_o     ( dma_host_tlul_rsp_intg_err       ),
-    .tl_o           ( host_tl_h_o                      ),
-    .tl_i           ( host_tl_h_i                      )
-  );
+  // Generic host-port datapath: instantiate the host adapter for each port's class,
+  // routing it to the 32-bit or 64-bit boundary vector.
+  for (genvar p = 0; p < NumPorts; p++) begin : gen_host_port
+    if (PortDesc[p].cls == PortTlul32) begin : g_tlul32
+      // Standard 32-bit TLUL host adapter.
+      tlul_adapter_host #(
+        .MAX_REQS(NUM_MAX_OUTSTANDING_REQS),
+        .EnableDataIntgGen(EnableDataIntgGen),
+        .EnableRspDataIntgCheck(EnableRspDataIntgCheck)
+      ) u_host (
+        .clk_i          ( gated_clk                         ),
+        .rst_ni         ( rst_ni                            ),
+        // do not make a request unless there is room for the response
+        .req_i          ( port_req[p]                       ),
+        .gnt_o          ( port_gnt[p]                       ),
+        .addr_i         ( port_addr[p][top_pkg::TL_AW-1:0]  ),
+        .we_i           ( port_we[p]                        ),
+        .wdata_i        ( port_wdata[p]                     ),
+        .wdata_intg_i   ( TL_A_USER_DEFAULT.data_intg       ),
+        .be_i           ( port_be[p]                        ),
+        .instr_type_i   ( MuBi4False                        ),
+        .user_rsvd_i    ( PortDesc[p].user_rsvd              ),
+        .valid_o        ( port_rvalid[p]                    ),
+        .rdata_o        ( port_rdata[p]                     ),
+        .rdata_intg_o   (                                   ),
+        .err_o          ( port_err[p]                       ),
+        .intg_err_o     ( port_intg_err[p]                  ),
+        .tl_o           ( host32_tl_h_o[dma_class_subidx_local(p)]  ),
+        .tl_i           ( host32_tl_h_i[dma_class_subidx_local(p)]  )
+      );
+    end else begin : g_tlul64
+      // Wide 64-bit TLUL host adapter (off-bus, point-to-point).
+      dma_tlul_adapter_host #(
+        .MAX_REQS(NUM_MAX_OUTSTANDING_REQS),
+        .EnableDataIntgGen(EnableDataIntgGen),
+        .EnableRspDataIntgCheck(EnableRspDataIntgCheck)
+      ) u_host (
+        .clk_i          ( gated_clk                           ),
+        .rst_ni         ( rst_ni                              ),
+        // do not make a request unless there is room for the response
+        .req_i          ( port_req[p]                         ),
+        .gnt_o          ( port_gnt[p]                         ),
+        .addr_i         ( port_addr[p]                        ),
+        .we_i           ( port_we[p]                          ),
+        .wdata_i        ( port_wdata[p]                       ),
+        .wdata_intg_i   ( TL_A_USER_DEFAULT.data_intg         ),
+        .be_i           ( port_be[p]                          ),
+        .instr_type_i   ( MuBi4False                          ),
+        // Wide a_user reserved field is DmaRsvdWidth (not stock RsvdWidth) bits.
+        .user_rsvd_i    ( dma_tlul_pkg::DmaRsvdWidth'(PortDesc[p].user_rsvd) ),
+        .valid_o        ( port_rvalid[p]                      ),
+        .rdata_o        ( port_rdata[p]                       ),
+        .rdata_intg_o   (                                     ),
+        .err_o          ( port_err[p]                         ),
+        .intg_err_o     ( port_intg_err[p]                    ),
+        .tl_o           ( host64_h2d_o[dma_class_subidx_local(p)] ),
+        .tl_i           ( host64_d2h_i[dma_class_subidx_local(p)] )
+      );
+    end
+  end
 
-  // Adapter from the DMA to the CTN
-  tlul_adapter_host #(
-    .MAX_REQS(NUM_MAX_OUTSTANDING_REQS),
-    .EnableDataIntgGen(EnableDataIntgGen),
-    .EnableRspDataIntgCheck(EnableRspDataIntgCheck)
-  ) u_dma_ctn_tlul_host (
-    .clk_i          ( gated_clk                        ),
-    .rst_ni         ( rst_ni                           ),
-    // do not make a request unless there is room for the response
-    .req_i          ( dma_ctn_tlul_req_valid           ),
-    .gnt_o          ( dma_ctn_tlul_gnt                 ),
-    .addr_i         ( dma_ctn_tlul_req_addr            ),
-    .we_i           ( dma_ctn_tlul_req_we              ),
-    .wdata_i        ( dma_ctn_tlul_req_wdata           ),
-    .wdata_intg_i   ( TL_A_USER_DEFAULT.data_intg      ),
-    .be_i           ( dma_ctn_tlul_req_be              ),
-    .instr_type_i   ( MuBi4False                       ),
-    .user_rsvd_i    ( TlUserRsvd                       ),
-    .valid_o        ( dma_ctn_tlul_rsp_valid           ),
-    .rdata_o        ( dma_ctn_tlul_rsp_data            ),
-    .rdata_intg_o   (                                  ),
-    .err_o          ( dma_ctn_tlul_rsp_err             ),
-    .intg_err_o     ( dma_ctn_tlul_rsp_intg_err        ),
-    .tl_o           ( ctn_tl_h2d_o                     ),
-    .tl_i           ( ctn_tl_d2h_i                     )
-  );
+  // Zero-count handling: tie off the placeholder boundary vector (default the output,
+  // absorb the input) when a class has no ports.
+  if (NumTlul32 == 0) begin : gen_no_tl32
+    assign host32_tl_h_o = '{default: tlul_pkg::TL_H2D_DEFAULT};
+    logic unused_host32_tl_h_i;
+    assign unused_host32_tl_h_i = ^{host32_tl_h_i};
+  end
+  if (NumTlul64 == 0) begin : gen_no_tl64
+    assign host64_h2d_o = '{default: dma_tlul_pkg::DMA_TL_H2D_DEFAULT};
+    logic unused_host64_d2h_i;
+    assign unused_host64_d2h_i = ^{host64_d2h_i};
+  end
+
+  // Aggregate the per-port response-integrity errors into the single alert path.
+  assign dma_tlul_rsp_intg_err = |port_intg_err;
 
   // Masking incoming handshake triggers with their enables
   lsio_trigger_t lsio_trigger;
@@ -408,10 +453,10 @@ module dma
   );
 
   logic                      capture_addr;
-  logic [SYS_ADDR_WIDTH-1:0] src_addr_q, src_addr_d;
-  logic [SYS_ADDR_WIDTH-1:0] dst_addr_q, dst_addr_d;
+  logic [DMA_ADDR_WIDTH-1:0] src_addr_q, src_addr_d;
+  logic [DMA_ADDR_WIDTH-1:0] dst_addr_q, dst_addr_d;
   prim_flop_en #(
-    .Width(SYS_ADDR_WIDTH)
+    .Width(DMA_ADDR_WIDTH)
   ) aff_src_addr (
     .clk_i ( gated_clk    ),
     .rst_ni( rst_ni       ),
@@ -421,7 +466,7 @@ module dma
   );
 
   prim_flop_en #(
-    .Width(SYS_ADDR_WIDTH)
+    .Width(DMA_ADDR_WIDTH)
   ) aff_dst_addr (
     .clk_i ( gated_clk    ),
     .rst_ni( rst_ni       ),
@@ -569,116 +614,94 @@ module dma
     end
   end
 
-  // Host interface to OT Internal address space
-  always_comb begin
-    dma_host_write = wr_issue & (dst_asid == OtInternalAddr);
-    dma_host_read  = rd_issue & (src_asid == OtInternalAddr);
-
-    dma_host_tlul_req_valid = dma_host_write | dma_host_read | dma_host_clear_intr;
-    // TL-UL 4B aligned
-    dma_host_tlul_req_addr  = dma_host_write ? {wr_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
-                             (dma_host_read  ? {rd_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
-                        (dma_host_clear_intr ? reg2hw.intr_src_addr[clear_index_q].q : 'b0));
-    dma_host_tlul_req_we    = dma_host_write | dma_host_clear_intr;
-    dma_host_tlul_req_wdata = dma_host_write ? wr_issue_data :
-                        (dma_host_clear_intr ? reg2hw.intr_src_wr_val[clear_index_q].q : 'b0);
-    dma_host_tlul_req_be    = dma_host_write ? wr_issue_be :
-                             (dma_host_read  ? rd_issue_be
-                                             : {top_pkg::TL_DBW{dma_host_clear_intr}});
+  // Per-port "is 32-bit?" vector (constant), indexed by the upper-bits-zero checks below.
+  logic [NumPorts-1:0] PortIs32;
+  for (genvar p = 0; p < NumPorts; p++) begin : gen_port_is32
+    assign PortIs32[p] = (PortDesc[p].cls != PortTlul64);
   end
 
-  // Host interface to SoC CTN address space
+  // ASID -> port-index reverse lookup; a miss drives the ASID validity error below.
+  logic [PortIdxW-1:0] src_port_idx, dst_port_idx;
+  logic                   src_asid_valid, dst_asid_valid;
   always_comb begin
-    dma_ctn_write = wr_issue & (dst_asid == SocControlAddr);
-    dma_ctn_read  = rd_issue & (src_asid == SocControlAddr);
-
-    dma_ctn_tlul_req_valid = dma_ctn_write | dma_ctn_read | dma_ctn_clear_intr;
-    // TL-UL 4B aligned
-    dma_ctn_tlul_req_addr  = dma_ctn_write ? {wr_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
-                            (dma_ctn_read  ? {rd_issue_addr[top_pkg::TL_AW-1:2], 2'b0} :
-                       (dma_ctn_clear_intr ? reg2hw.intr_src_addr[clear_index_q].q : 'b0));
-    dma_ctn_tlul_req_we    = dma_ctn_write | dma_ctn_clear_intr;
-    dma_ctn_tlul_req_wdata = dma_ctn_write ? wr_issue_data :
-                       (dma_ctn_clear_intr ? reg2hw.intr_src_wr_val[clear_index_q].q : 'b0);
-    dma_ctn_tlul_req_be    = dma_ctn_write ? wr_issue_be :
-                            (dma_ctn_read  ? rd_issue_be : {top_pkg::TL_DBW{dma_ctn_clear_intr}});
+    src_port_idx   = '0;
+    dst_port_idx   = '0;
+    src_asid_valid = 1'b0;
+    dst_asid_valid = 1'b0;
+    for (int unsigned i = 0; i < NumPorts; i++) begin
+      if (PortDesc[i].asid == asid_encoding_e'(src_asid)) begin
+        src_port_idx   = PortIdxW'(i);
+        src_asid_valid = 1'b1;
+      end
+      if (PortDesc[i].asid == asid_encoding_e'(dst_asid)) begin
+        dst_port_idx   = PortIdxW'(i);
+        dst_asid_valid = 1'b1;
+      end
+    end
   end
 
-  // Host interface to SoC SYS address space
+  // Interrupt-clear targeting: clear_intr_bus selects 1 -> OT-internal, 0 -> SoC-control;
+  // resolve those ASIDs to port indices via the descriptor lookup.
+  logic [PortIdxW-1:0] ot_internal_port_idx, soc_control_port_idx;
   always_comb begin
-    dma_sys_write = wr_issue & (dst_asid == SocSystemAddr);
-    dma_sys_read  = rd_issue & (src_asid == SocSystemAddr);
-
-    sys_req_d.vld_vec     [SysCmdWrite] = dma_sys_write;
-    sys_req_d.metadata_vec[SysCmdWrite] = src_metadata;
-    sys_req_d.opcode_vec  [SysCmdWrite] = SysOpcWrite;
-    sys_req_d.iova_vec    [SysCmdWrite] = dma_sys_write ?
-                                         {wr_issue_addr[(SYS_ADDR_WIDTH-1):2], 2'b0} : 'b0;
-    sys_req_d.racl_vec    [SysCmdWrite] = SysRaclRole;
-
-    sys_req_d.write_data = {SYS_DATA_WIDTH{dma_sys_write}} & wr_issue_data;
-    sys_req_d.write_be   = {SYS_DATA_BYTEWIDTH{dma_sys_write}} & wr_issue_be;
-
-    sys_req_d.vld_vec     [SysCmdRead] = dma_sys_read;
-    sys_req_d.metadata_vec[SysCmdRead] = src_metadata;
-    sys_req_d.opcode_vec  [SysCmdRead] = SysOpcRead;
-    sys_req_d.iova_vec    [SysCmdRead] = dma_sys_read ?
-                                         {rd_issue_addr[(SYS_ADDR_WIDTH-1):2], 2'b0} : 'b0;
-    sys_req_d.racl_vec    [SysCmdRead] = SysRaclRole;
-    sys_req_d.read_be                  = rd_issue_be;
+    ot_internal_port_idx = '0;
+    soc_control_port_idx = '0;
+    for (int unsigned i = 0; i < NumPorts; i++) begin
+      if (PortDesc[i].asid == OtInternalAddr) ot_internal_port_idx = PortIdxW'(i);
+      if (PortDesc[i].asid == SocControlAddr) soc_control_port_idx = PortIdxW'(i);
+    end
   end
 
-  // Write response muxing
+  logic [PortIdxW-1:0] clr_port_idx;
+  assign clr_port_idx = reg2hw.clear_intr_bus.q[clear_index_q] ? ot_internal_port_idx
+                                                              : soc_control_port_idx;
+
+  // Bus signals are asserted only when configured and active, so address/data are not
+  // leaked to other buses: only the resolved port is driven, everything else is '0.
   always_comb begin
-    unique case (dst_asid)
-      OtInternalAddr: begin
-        // Write request grant
-        write_gnt       = dma_host_tlul_gnt;
-        // Write response
-        write_rsp_valid = dma_host_tlul_rsp_valid;
-        // Write error occurred
-        write_rsp_error = dma_host_tlul_rsp_err;
-      end
-      SocSystemAddr: begin
-        write_gnt       = 1'b1;  // No requirement to wait
-        write_rsp_valid = sys_resp_q.grant_vec[SysCmdWrite] | sys_resp_q.error_vld;
-        write_rsp_error = sys_resp_q.error_vld;
-      end
-      // SocControlAddr is handled here
-      //   (other ASID values prevented in configuration validation).
-      default: begin
-        write_gnt       = dma_ctn_tlul_gnt;
-        write_rsp_valid = dma_ctn_tlul_rsp_valid;
-        write_rsp_error = dma_ctn_tlul_rsp_err;
-      end
-    endcase
+    port_req   = '0;
+    port_we    = '0;
+    port_addr  = '0;
+    port_wdata = '0;
+    port_be    = '0;
+
+    if (rd_issue) begin
+      port_req [src_port_idx] = 1'b1;
+      port_addr[src_port_idx] = rd_issue_addr;
+      port_be  [src_port_idx] = rd_issue_be;
+    end
+    if (wr_issue) begin
+      port_req  [dst_port_idx] = 1'b1;
+      port_we   [dst_port_idx] = 1'b1;
+      port_addr [dst_port_idx] = wr_issue_addr;
+      port_wdata[dst_port_idx] = wr_issue_data;
+      port_be   [dst_port_idx] = wr_issue_be;
+    end
+    if (dma_clear_intr) begin
+      port_req  [clr_port_idx] = 1'b1;
+      port_we   [clr_port_idx] = 1'b1;
+      port_addr [clr_port_idx] = DMA_ADDR_WIDTH'(reg2hw.intr_src_addr[clear_index_q].q);
+      port_wdata[clr_port_idx] = reg2hw.intr_src_wr_val[clear_index_q].q;
+      port_be   [clr_port_idx] = {top_pkg::TL_DBW{1'b1}};
+    end
   end
 
-  // Read response muxing
-  always_comb begin
-    unique case (src_asid)
-      OtInternalAddr: begin
-        // Read request grant
-        read_gnt       = dma_host_tlul_gnt;
-        // Read response
-        read_rsp_valid = dma_host_tlul_rsp_valid;
-        // Read error occurred
-        read_rsp_error = dma_host_tlul_rsp_err;
-      end
-      SocSystemAddr: begin
-        read_gnt       = 1'b1;  // No requirement to wait
-        read_rsp_valid = sys_resp_q.read_data_vld;
-        read_rsp_error = sys_resp_q.error_vld;
-      end
-      // SocControlAddr is handled here
-      //   (other ASID values prevented in configuration validation).
-      default: begin
-        read_gnt       = dma_ctn_tlul_gnt;
-        read_rsp_valid = dma_ctn_tlul_rsp_valid;
-        read_rsp_error = dma_ctn_tlul_rsp_err;
-      end
-    endcase
-  end
+  // Response / read-data muxing: index the per-port arrays by the resolved indices.
+  assign read_gnt       = port_gnt   [src_port_idx];
+  assign read_rsp_valid = port_rvalid[src_port_idx];
+  assign read_rsp_error = port_err   [src_port_idx];
+
+  assign write_gnt       = port_gnt   [dst_port_idx];
+  assign write_rsp_valid = port_rvalid[dst_port_idx];
+  assign write_rsp_error = port_err   [dst_port_idx];
+
+  // Interrupt-clear response muxing: index by the resolved clear-target port.
+  assign intr_clear_tlul_gnt       = port_gnt   [clr_port_idx];
+  assign intr_clear_tlul_rsp_valid = port_rvalid[clr_port_idx];
+  assign intr_clear_tlul_rsp_error = port_err   [clr_port_idx];
+
+  // Collect read data from the appropriate port.
+  assign dma_rsp_data = port_rdata[src_port_idx];
 
   always_comb begin
     ctrl_state_d = ctrl_state_q;
@@ -716,21 +739,13 @@ module dma
     data_wvalid       = 1'b0;
     data_rready       = 1'b0;
 
-    dma_host_clear_intr = 1'b0;
-    dma_ctn_clear_intr = 1'b0;
+    dma_clear_intr = 1'b0;
     clear_index_d  = '0;
     clear_index_en = '0;
 
     clear_go       = 1'b0;
     chunk_done     = 1'b0;
 
-    // Mux the TL-UL grant and response signals depending on the selected bus interface
-    intr_clear_tlul_gnt       = reg2hw.clear_intr_bus.q[clear_index_q] ? dma_host_tlul_gnt :
-                                                                         dma_ctn_tlul_gnt;
-    intr_clear_tlul_rsp_valid = reg2hw.clear_intr_bus.q[clear_index_q] ? dma_host_tlul_rsp_valid :
-                                                                         dma_ctn_tlul_rsp_valid;
-    intr_clear_tlul_rsp_error = reg2hw.clear_intr_bus.q[clear_index_q] ? dma_host_tlul_rsp_err :
-                                                                         dma_ctn_tlul_rsp_err;
     dma_state_error = 1'b0;
 
     sha2_hash_start      = 1'b0;
@@ -798,9 +813,8 @@ module dma
         DmaClearIntrSrc: begin
           // Clear the interrupt by writing
           if (reg2hw.clear_intr_src.q[clear_index_q]) begin
-            // Send 'clear interrupt' write to the appropriate bus
-            dma_host_clear_intr = reg2hw.clear_intr_bus.q[clear_index_q];
-            dma_ctn_clear_intr = !reg2hw.clear_intr_bus.q[clear_index_q];
+            // Send 'clear interrupt' write to the bus selected by clr_port_idx
+            dma_clear_intr = 1'b1;
 
             if (intr_clear_tlul_gnt) begin
               ctrl_state_d = DmaWaitIntrSrcResponse;
@@ -876,12 +890,12 @@ module dma
             next_error[DmaSizeErr] = 1'b1;
           end
 
-          // Ensure that ASIDs have valid values
+          // Ensure that ASIDs have valid values, i.e., resolve to a configured port.
           // SEC_CM: ASID.INTERSIG.MUBI
-          if (!(src_asid inside {OtInternalAddr, SocControlAddr, SocSystemAddr})) begin
+          if (!src_asid_valid) begin
             next_error[DmaAsidErr] = 1'b1;
           end
-          if (!(dst_asid inside {OtInternalAddr, SocControlAddr, SocSystemAddr})) begin
+          if (!dst_asid_valid) begin
             next_error[DmaAsidErr] = 1'b1;
           end
 
@@ -907,34 +921,45 @@ module dma
             next_error[DmaDstAddrErr] = 1'b1;
           end
 
-          // If data from the SOC system bus or the control bus is transferred to the OT
-          // internal memory, the destination range must fall into the DMA-enabled region.
-          if ((src_asid inside {SocControlAddr, SocSystemAddr}) && (dst_asid == OtInternalAddr) &&
-              ((reg2hw.dst_addr_lo.q > control_q.enabled_memory_range_limit) ||
-               (reg2hw.dst_addr_lo.q < control_q.enabled_memory_range_base) ||
-               ((SYS_ADDR_WIDTH'(reg2hw.dst_addr_lo.q) +
-                 SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
-                 SYS_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
-            next_error[DmaDstAddrErr] = 1'b1;
-          end
+          // Descriptor-driven memory-range protection: when exactly one endpoint is
+          // range-checked, its address range must fall within the DMA enabled memory region.
+          //
+          // The descriptor-indexed checks below resolve `PortDesc`/`PortIs32` via
+          // src/dst_port_idx, which default to port 0 on an invalid ASID. Gate them on
+          // both ASIDs being valid so an invalid ASID raises only DmaAsidErr (above) and
+          // not a spurious DmaSrc/DstAddrErr from the bogus default index.
+          if (src_asid_valid && dst_asid_valid) begin
+            // Destination is the range-checked endpoint (e.g. SoC -> OT copy).
+            if (PortDesc[dst_port_idx].range_check && !PortDesc[src_port_idx].range_check &&
+                // Out-of-bound check
+                ((reg2hw.dst_addr_lo.q > control_q.enabled_memory_range_limit) ||
+                  (reg2hw.dst_addr_lo.q < control_q.enabled_memory_range_base) ||
+                  ((DMA_ADDR_WIDTH'(reg2hw.dst_addr_lo.q) +
+                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
+                    DMA_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
+              next_error[DmaDstAddrErr] = 1'b1;
+            end
 
-          // If data from the OT internal memory is transferred to the SOC system bus or the
-          // control bus, the source range must fall into the DMA-enabled region.
-          if ((dst_asid inside {SocControlAddr, SocSystemAddr}) && (src_asid == OtInternalAddr) &&
-              ((reg2hw.src_addr_lo.q > control_q.enabled_memory_range_limit) ||
-               (reg2hw.src_addr_lo.q < control_q.enabled_memory_range_base) ||
-               ((SYS_ADDR_WIDTH'(reg2hw.src_addr_lo.q) +
-                 SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
-                 SYS_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
-            next_error[DmaSrcAddrErr] = 1'b1;
-          end
+            // Source is the range-checked endpoint (e.g. OT -> SoC copy).
+            if (PortDesc[src_port_idx].range_check && !PortDesc[dst_port_idx].range_check &&
+                  // Out-of-bound check
+                  ((reg2hw.src_addr_lo.q > control_q.enabled_memory_range_limit) ||
+                  (reg2hw.src_addr_lo.q < control_q.enabled_memory_range_base)   ||
+                  ((DMA_ADDR_WIDTH'(reg2hw.src_addr_lo.q) +
+                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
+                    DMA_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
+              next_error[DmaSrcAddrErr] = 1'b1;
+            end
 
-          // 32-bit address spaces (OT internal, SOC control) must have zero upper address bits
-          if ((src_asid inside {SocControlAddr, OtInternalAddr}) && (|reg2hw.src_addr_hi.q)) begin
-            next_error[DmaSrcAddrErr] = 1'b1;
-          end
-          if ((dst_asid inside {SocControlAddr, OtInternalAddr}) && (|reg2hw.dst_addr_hi.q)) begin
-            next_error[DmaDstAddrErr] = 1'b1;
+            // 32-bit source port: upper address bits must be zero (32-bit address space).
+            if (PortIs32[src_port_idx] && (|reg2hw.src_addr_hi.q)) begin
+              next_error[DmaSrcAddrErr] = 1'b1;
+            end
+
+            // 32-bit destination port: upper address bits must be zero (32-bit address space).
+            if (PortIs32[dst_port_idx] && (|reg2hw.dst_addr_hi.q)) begin
+              next_error[DmaDstAddrErr] = 1'b1;
+            end
           end
 
           if (!control_q.range_valid) begin
@@ -947,8 +972,7 @@ module dma
           fast_mode_d = (control_q.opcode == OpcCopy) &&
                         !control_q.cfg_handshake_en &&
                         (reg2hw.chunk_data_size.q >= reg2hw.total_data_size.q) &&
-                        (src_asid inside {OtInternalAddr, SocControlAddr}) &&
-                        (dst_asid inside {OtInternalAddr, SocControlAddr});
+                        src_asid_valid && dst_asid_valid;
           capture_fast_mode = 1'b1;
 
           // If one or more errors occurred, do not start the transfer.
@@ -968,7 +992,7 @@ module dma
             // Cross-port (source and destination on different physical ports): overlap reads
             // and writes concurrently (DmaRunPipe). Same-port: alternate read/write bursts to
             // keep responses unambiguous on the shared d-channel (DmaReadBurst).
-            ctrl_state_d     = (src_asid != dst_asid) ? DmaRunPipe : DmaReadBurst;
+            ctrl_state_d     = (src_port_idx != dst_port_idx) ? DmaRunPipe : DmaReadBurst;
           end else begin
             // Start the inline hashing on the very first transfer (transfer_byte_q still 0).
             if ((transfer_byte_q == '0) && use_inline_hashing) begin
@@ -1308,19 +1332,19 @@ module dma
     if (reg2hw.src_config.increment.q == AddrNoIncrement) begin
       src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q};
     end else if (reg2hw.src_config.wrap.q == AddrWrapChunk) begin
-      src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} + SYS_ADDR_WIDTH'(setup_chunk_byte);
+      src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} + DMA_ADDR_WIDTH'(setup_chunk_byte);
     end else begin
       src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} +
-                   SYS_ADDR_WIDTH'(setup_transfer_byte);
+                   DMA_ADDR_WIDTH'(setup_transfer_byte);
     end
 
     if (reg2hw.dst_config.increment.q == AddrNoIncrement) begin
       dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q};
     end else if (reg2hw.dst_config.wrap.q == AddrWrapChunk) begin
-      dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} + SYS_ADDR_WIDTH'(setup_chunk_byte);
+      dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} + DMA_ADDR_WIDTH'(setup_chunk_byte);
     end else begin
       dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} +
-                   SYS_ADDR_WIDTH'(setup_transfer_byte);
+                   DMA_ADDR_WIDTH'(setup_transfer_byte);
     end
 
     unique case (transfer_width_d)
@@ -1354,15 +1378,6 @@ module dma
         req_dst_be_d = top_pkg::TL_DBW'('b0000);
         req_src_be_d = top_pkg::TL_DBW'('b0000);
       end
-    endcase
-  end
-
-  // Collect read data from the appropriate port.
-  always_comb begin
-    unique case (src_asid)
-      OtInternalAddr: dma_rsp_data = dma_host_tlul_rsp_data;
-      SocControlAddr: dma_rsp_data = dma_ctn_tlul_rsp_data;
-      default:        dma_rsp_data = sys_resp_q.read_data;
     endcase
   end
 
@@ -1416,39 +1431,33 @@ module dma
   );
 
   // Per-port outstanding-transaction counters: +1 on an accepted request, -1 on a response.
-  // Saturating, and they count reads, writes and interrupt-clear writes uniformly because all
-  // of those flow through the same host/CTN TL-UL adapters.
+  // They count reads, writes and interrupt-clear writes uniformly across the generic ports.
   always_comb begin
-    logic host_acc, host_rsp, ctn_acc, ctn_rsp;
-    host_acc = dma_host_tlul_req_valid & dma_host_tlul_gnt;
-    host_rsp = dma_host_tlul_rsp_valid;
-    ctn_acc  = dma_ctn_tlul_req_valid & dma_ctn_tlul_gnt;
-    ctn_rsp  = dma_ctn_tlul_rsp_valid;
-
-    host_outst_d = host_outst_q;
-    if (host_acc & ~host_rsp)      host_outst_d = host_outst_q + PORT_OUTST_W'(1);
-    else if (~host_acc & host_rsp) host_outst_d = host_outst_q - PORT_OUTST_W'(1);
-
-    ctn_outst_d = ctn_outst_q;
-    if (ctn_acc & ~ctn_rsp)        ctn_outst_d = ctn_outst_q + PORT_OUTST_W'(1);
-    else if (~ctn_acc & ctn_rsp)   ctn_outst_d = ctn_outst_q - PORT_OUTST_W'(1);
+    port_outst_d = port_outst_q;
+    for (int unsigned i = 0; i < NumPorts; i++) begin
+      unique case ({port_req[i] & port_gnt[i], port_rvalid[i]})
+        2'b10: if (&port_outst_q[i]) port_outst_d[i] = port_outst_q[i];
+               else                  port_outst_d[i] = port_outst_q[i] + PORT_OUTST_W'(1);
+        2'b01: if (port_outst_q[i] == '0) port_outst_d[i] = '0;
+               else                       port_outst_d[i] = port_outst_q[i] - PORT_OUTST_W'(1);
+        default: ;
+      endcase
+    end
   end
-  prim_flop #(.Width(PORT_OUTST_W)) aff_host_outst (
-    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(host_outst_d), .q_o(host_outst_q)
+  prim_flop #(.Width(NumPorts * PORT_OUTST_W)) aff_port_outst (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(port_outst_d), .q_o(port_outst_q)
   );
-  prim_flop #(.Width(PORT_OUTST_W)) aff_ctn_outst (
-    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(ctn_outst_d), .q_o(ctn_outst_q)
-  );
-  // A new transfer may only begin once both TL-UL ports have no responses outstanding, so a
+  // A new transfer may only begin once all TL-UL ports have no responses outstanding, so a
   // prior aborted/errored transfer's late responses cannot bleed into it.
-  assign dma_drained = (host_outst_q == '0) && (ctn_outst_q == '0);
+  assign dma_drained = !(|port_outst_q);
 
   // Outstanding-counter bounds assertions (must never underflow: a response implies a prior
   // accepted request still outstanding).
-  `ASSERT(HostOutstNoUnderflow_A, dma_host_tlul_rsp_valid |-> (host_outst_q != '0),
-          gated_clk, !rst_ni)
-  `ASSERT(CtnOutstNoUnderflow_A,  dma_ctn_tlul_rsp_valid  |-> (ctn_outst_q  != '0),
-          gated_clk, !rst_ni)
+  for (genvar p = 0; p < NumPorts; p++) begin : gen_port_outst_assert
+    `ASSERT(PortOutstNoUnderflow_A,
+            port_rvalid[p] |-> ((port_outst_q[p] != '0) || (port_req[p] && port_gnt[p])),
+            gated_clk, !rst_ni)
+  end
 
   // The DMA-enabled-range membership check (DmaCfgValidate) bounds the access using
   // chunk_data_size; the burst path accesses total_data_size bytes. This is only safe because
@@ -1601,9 +1610,9 @@ module dma
     // When we would update the register, we would update it with the current transferred number of
     // bytes of the current chunk
     new_dst_addr = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} +
-                    SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q);
+                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q);
     new_src_addr = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} +
-                    SYS_ADDR_WIDTH'(reg2hw.chunk_data_size.q);
+                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q);
 
     // If we are in multi-chunk mode, we need to update the register addresses since they are needed
     // for the next chunk. Do this only when going back to Idle and when we are incrementing the
@@ -1774,192 +1783,12 @@ module dma
   end
 
   //////////////////////////////////////////////////////////////////////////////
-  // Interface signal flopping
-  //////////////////////////////////////////////////////////////////////////////
-
-  prim_flop #(
-    .Width(SYS_NUM_REQ_CH)
-  ) u_sys_vld_vec (
-    .clk_i ( gated_clk         ),
-    .rst_ni( rst_ni            ),
-    .d_i   ( sys_req_d.vld_vec ),
-    .q_o   ( sys_o.vld_vec     )
-  );
-
-  prim_flop_en #(
-    .Width(SYS_METADATA_WIDTH)
-  ) u_sys_metadata_write_vec (
-    .clk_i ( gated_clk                           ),
-    .rst_ni( rst_ni                              ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdWrite]      ),
-    .d_i   ( sys_req_d.metadata_vec[SysCmdWrite] ),
-    .q_o   ( sys_o.metadata_vec[SysCmdWrite]     )
-  );
-
-  prim_flop_en #(
-    .Width($bits(sys_opc_e))
-  ) u_sys_opcode_write_vec (
-    .clk_i ( gated_clk                         ),
-    .rst_ni( rst_ni                            ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdWrite]    ),
-    .d_i   ( sys_req_d.opcode_vec[SysCmdWrite] ),
-    .q_o   ( {sys_o.opcode_vec[SysCmdWrite]}   )
-  );
-
-  prim_flop_en #(
-    .Width(SYS_ADDR_WIDTH)
-  ) u_sys_iova_write_vec (
-    .clk_i ( gated_clk                       ),
-    .rst_ni( rst_ni                          ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdWrite]  ),
-    .d_i   ( sys_req_d.iova_vec[SysCmdWrite] ),
-    .q_o   ( sys_o.iova_vec[SysCmdWrite]     )
-  );
-
-  prim_flop_en #(
-    .Width($bits(top_racl_pkg::racl_role_t))
-  ) u_sys_racl_write_vec (
-    .clk_i ( gated_clk                       ),
-    .rst_ni( rst_ni                          ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdWrite]  ),
-    .d_i   ( sys_req_d.racl_vec[SysCmdWrite] ),
-    .q_o   ( sys_o.racl_vec[SysCmdWrite]     )
-  );
-
-  prim_flop_en #(
-    .Width(SYS_METADATA_WIDTH)
-  ) u_sys_metadata_read_vec (
-    .clk_i ( gated_clk                          ),
-    .rst_ni( rst_ni                             ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdRead]      ),
-    .d_i   ( sys_req_d.metadata_vec[SysCmdRead] ),
-    .q_o   ( sys_o.metadata_vec[SysCmdRead]     )
-  );
-
-  prim_flop_en #(
-    .Width($bits(sys_opc_e))
-  ) u_sys_opcode_read_vec (
-    .clk_i ( gated_clk                        ),
-    .rst_ni( rst_ni                           ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdRead]    ),
-    .d_i   ( sys_req_d.opcode_vec[SysCmdRead] ),
-    .q_o   ( {sys_o.opcode_vec[SysCmdRead]}   )
-  );
-
-  prim_flop_en #(
-    .Width(SYS_ADDR_WIDTH)
-  ) u_sys_iova_read_vec (
-    .clk_i ( gated_clk                      ),
-    .rst_ni( rst_ni                         ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdRead]  ),
-    .d_i   ( sys_req_d.iova_vec[SysCmdRead] ),
-    .q_o   ( sys_o.iova_vec[SysCmdRead]     )
-  );
-
-  prim_flop_en #(
-    .Width($bits(top_racl_pkg::racl_role_t))
-  ) u_sys_racl_read_vec (
-    .clk_i ( gated_clk                      ),
-    .rst_ni( rst_ni                         ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdRead]  ),
-    .d_i   ( sys_req_d.racl_vec[SysCmdRead] ),
-    .q_o   ( sys_o.racl_vec[SysCmdRead]     )
-  );
-
-  prim_flop_en #(
-    .Width(SYS_DATA_WIDTH)
-  ) u_sys_write_data (
-    .clk_i ( gated_clk                      ),
-    .rst_ni( rst_ni                         ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdWrite] ),
-    .d_i   ( sys_req_d.write_data           ),
-    .q_o   ( sys_o.write_data               )
-  );
-
-  prim_flop_en #(
-    .Width(SYS_DATA_BYTEWIDTH)
-  ) u_sys_write_be (
-    .clk_i ( gated_clk                      ),
-    .rst_ni( rst_ni                         ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdWrite] ),
-    .d_i   ( sys_req_d.write_be             ),
-    .q_o   ( sys_o.write_be                 )
-  );
-
-  prim_flop_en #(
-    .Width(SYS_DATA_BYTEWIDTH)
-  ) u_sys_read_be (
-    .clk_i ( gated_clk                      ),
-    .rst_ni( rst_ni                         ),
-    .en_i  ( sys_req_d.vld_vec[SysCmdRead ] ),
-    .d_i   ( sys_req_d.read_be              ),
-    .q_o   ( sys_o.read_be                  )
-  );
-
-  prim_flop #(
-    .Width(SYS_NUM_REQ_CH)
-  ) u_sys_gnt_vec (
-    .clk_i ( gated_clk            ),
-    .rst_ni( rst_ni               ),
-    .d_i   ( sys_i.grant_vec      ),
-    .q_o   ( sys_resp_q.grant_vec )
-  );
-
-  prim_flop #(
-    .Width(1)
-  ) u_sys_read_data_valid (
-    .clk_i ( gated_clk                ),
-    .rst_ni( rst_ni                   ),
-    .d_i   ( sys_i.read_data_vld      ),
-    .q_o   ( sys_resp_q.read_data_vld )
-  );
-
-  prim_flop #(
-    .Width(SYS_DATA_WIDTH)
-  ) u_sys_read_data (
-    .clk_i ( gated_clk            ),
-    .rst_ni( rst_ni               ),
-    .d_i   ( sys_i.read_data      ),
-    .q_o   ( sys_resp_q.read_data )
-  );
-
-  prim_flop #(
-    .Width(SYS_METADATA_WIDTH)
-  ) u_sys_read_metadata (
-    .clk_i ( gated_clk                ),
-    .rst_ni( rst_ni                   ),
-    .d_i   ( sys_i.read_metadata      ),
-    .q_o   ( sys_resp_q.read_metadata )
-  );
-
-  prim_flop #(
-    .Width(1)
-  ) u_sys_read_error_valid (
-    .clk_i ( gated_clk            ),
-    .rst_ni( rst_ni               ),
-    .d_i   ( sys_i.error_vld      ),
-    .q_o   ( sys_resp_q.error_vld )
-  );
-
-  prim_flop #(
-    .Width(SYS_NUM_ERROR_TYPES)
-  ) u_sys_read_error (
-    .clk_i ( gated_clk            ),
-    .rst_ni( rst_ni               ),
-    .d_i   ( sys_i.error_vec      ),
-    .q_o   ( sys_resp_q.error_vec )
-  );
-
-  //////////////////////////////////////////////////////////////////////////////
   // Unused signals
   //////////////////////////////////////////////////////////////////////////////
   logic unused_signals;
   assign unused_signals = ^{reg2hw.enabled_memory_range_base.qe,
                             reg2hw.enabled_memory_range_limit.qe,
                             reg2hw.range_regwen.q,
-                            sys_resp_q.error_vec,
-                            sys_resp_q.read_metadata,
-                            sys_resp_q.grant_vec[SysCmdRead],
                             // Read-ahead burst datapath: status bits not consumed (flow is
                             // governed by the outstanding counters and data_depth) and the
                             // word-aligned issue-address LSBs.
@@ -1982,12 +1811,27 @@ module dma
   `ASSERT_KNOWN(TlDValidKnownO_A, tl_d_o.d_valid)
   `ASSERT_KNOWN(TlAReadyKnownO_A, tl_d_o.a_ready)
 
-  `ASSERT_KNOWN(CtnTlAValidKnownO_A, ctn_tl_h2d_o.a_valid)
-  `ASSERT_KNOWN(CtnTlDReadyKnownO_A, ctn_tl_h2d_o.d_ready)
-  `ASSERT_KNOWN(HostTlAValidKnownO_A, host_tl_h_o.a_valid)
-  `ASSERT_KNOWN(HostTlDReadyKnownO_A, host_tl_h_o.d_ready)
+  // 32-bit host ports
+  for (genvar i = 0; i < NumTlul32; i++) begin : gen_host_tl_known_a
+    `ASSERT_KNOWN(HostTlAValidKnownO_A, host32_tl_h_o[i].a_valid)
+    `ASSERT_KNOWN(HostTlDReadyKnownO_A, host32_tl_h_o[i].d_ready)
+  end
+  // 64-bit host ports
+  for (genvar i = 0; i < NumTlul64; i++) begin : gen_host_wide_known_a
+    `ASSERT_KNOWN(HostTlWideAValidKnownO_A, host64_h2d_o[i].a_valid)
+    `ASSERT_KNOWN(HostTlWideDReadyKnownO_A, host64_h2d_o[i].d_ready)
+  end
 
-  `ASSERT_KNOWN(SysValidKnownO_A, sys_o.vld_vec)
+  // The pipelined fast path may request its distinct source and destination ports together.
+  `ASSERT(MaxTwoPortReq_A, $countones(port_req) <= 2, gated_clk, !rst_ni)
+  `ASSERT(TwoPortReqIsCrossPort_A,
+          ($countones(port_req) == 2) |-> (src_port_idx != dst_port_idx), gated_clk, !rst_ni)
+
+  // A request must only target a port whose ASID resolved to a valid index.
+  `ASSERT(ReadReqValidIdx_A, rd_issue |-> src_asid_valid,
+          gated_clk, !rst_ni)
+  `ASSERT(WriteReqValidIdx_A, wr_issue |-> dst_asid_valid,
+          gated_clk, !rst_ni)
 
   // Alert assertions for reg_we onehot check
   `ASSERT_PRIM_REG_WE_ONEHOT_ERROR_TRIGGER_ALERT(RegWeOnehotCheck_A, u_dma_reg, alert_tx_o[0])
@@ -2008,4 +1852,19 @@ module dma
 
   // Alert assertion for sparse FSM.
   `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(CtrlStateFsmCheck_A, aff_ctrl_state_q, alert_tx_o[0])
+
+  // Boundary-class count parameters must stay consistent with the `PortDesc` array.
+  `ASSERT_INIT(NumTlul32Consistent_A, NumTlul32 == dma_count_class_local(dma_pkg::PortTlul32))
+  `ASSERT_INIT(NumTlul64Consistent_A, NumTlul64 == dma_count_class_local(dma_pkg::PortTlul64))
+  // A DMA with zero data ports is degenerate (PortDesc[NumPorts] requires NumPorts >= 1).
+  `ASSERT_INIT(NumPortsNonZero_A, NumPorts >= 1)
+
+  // The interrupt-clear path resolves the OT-internal and SoC-control ASIDs to port
+  // indices via `PortDesc` (clr_port_idx). A miss would silently default to port 0, so
+  // require both clear-target ASIDs to be present in `PortDesc`.
+  `ASSERT_INIT(OtInternalPortPresent_A, dma_count_asid_local(dma_pkg::OtInternalAddr) >= 1)
+  `ASSERT_INIT(SocControlPortPresent_A, dma_count_asid_local(dma_pkg::SocControlAddr) >= 1)
+
+  // The wide a_user must occupy exactly TL_AUW bits, like the stock tl_a_user_t.
+  `ASSERT_INIT(DmaAUserWidth_A, $bits(dma_tlul_pkg::dma_tl_a_user_t) == top_pkg::TL_AUW)
 endmodule

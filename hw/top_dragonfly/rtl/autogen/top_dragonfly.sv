@@ -115,7 +115,6 @@ module top_dragonfly #(
   // parameters for dma
   parameter bit DmaEnableDataIntgGen = 1'b1,
   parameter bit DmaEnableRspDataIntgCheck = 1'b1,
-  parameter logic [tlul_pkg::RsvdWidth-1:0] DmaTlUserRsvd = '0,
   parameter top_racl_pkg::racl_role_t DmaSysRaclRole = '0,
   parameter int unsigned DmaOtAgentId = 0,
   // parameters for mbx0
@@ -2232,7 +2231,6 @@ module top_dragonfly #(
     .AlertSkewCycles(top_pkg::AlertSkewCycles),
     .EnableDataIntgGen(DmaEnableDataIntgGen),
     .EnableRspDataIntgCheck(DmaEnableRspDataIntgCheck),
-    .TlUserRsvd(DmaTlUserRsvd),
     .SysRaclRole(DmaSysRaclRole),
     .OtAgentId(DmaOtAgentId)
   ) u_dma (
