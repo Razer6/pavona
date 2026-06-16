@@ -127,7 +127,7 @@ package tl_main_pkg;
     TlRvCoreIbexCorei = 0,
     TlRvCoreIbexCored = 1,
     TlRvDmSba = 2,
-    TlDmaHost = 3,
+    TlDmaHost320 = 3,
     TlMbx0Sram = 4,
     TlMbx1Sram = 5,
     TlMbx2Sram = 6,
