@@ -121,6 +121,14 @@ class dma_scoreboard extends cip_base_scoreboard #(
     return -1;
   endfunction : intr_addr_lookup
 
+  // Return the full A-channel address for a monitored item: 64-bit `a_addr_full` for the
+  // wide `dma_tl_seq_item` (SoC System port), else the 32-bit `a_addr`.
+  function bit [63:0] get_item_addr(tl_seq_item item);
+    dma_tl_seq_item item64;
+    if ($cast(item64, item)) return item64.get_a_addr_full();
+    return item.a_addr;
+  endfunction : get_item_addr
+
   // Check if the address matches our expectations and is valid for the current configuration.
   // This method is common for both source and destination address.
   function void check_addr(bit [63:0]       addr,        // Observed address.
@@ -405,8 +413,10 @@ class dma_scoreboard extends cip_base_scoreboard #(
       end else begin
         // Write to 'Clear Interrupt' address, so check the value written and the bus to which the
         // write has been sent.
+        // `clear_intr_bus[i]` set -> OT-internal bus, else SoC Control bus.
         string exp_name;
-        exp_name = dma_config.clear_intr_bus[intr_source] ? "host" : "ctn";
+        exp_name = dma_config.clear_intr_bus[intr_source] ? cfg.asid_names[OtInternalAddr]
+                                                          : cfg.asid_names[SocControlAddr];
 
         `uvm_info(`gfn, $sformatf("Clear Interrupt write of 0x%0x to address 0x%0x",
                                   item.a_data, item.a_addr), UVM_HIGH)
@@ -593,12 +603,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
             AddrChannel: begin
               `DV_CHECK_FATAL(a_chan_fifo.try_get(item),
                               "dir_fifo pointed at A channel, but a_chan_fifo empty")
-              a_addr = item.a_addr;
-              if (if_name == "sys") begin
-                a_addr += (item.a_opcode == Get) ? cfg.soc_system_src_base_addr
-                                                 : cfg.soc_system_dst_base_addr;
-              end
-
+              a_addr = get_item_addr(item);
               `uvm_info(`gfn, $sformatf("received %s a_chan %s item with addr: %0x and data: %0x",
                                         if_name,
                                         item.is_write() ? "write" : "read", a_addr,
@@ -617,11 +622,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
             DataChannel: begin
               `DV_CHECK_FATAL(d_chan_fifo.try_get(item),
                               "dir_fifo pointed at D channel, but d_chan_fifo empty")
-              a_addr = item.a_addr;
-              if (if_name == "sys") begin
-                a_addr += (item.a_opcode == Get) ? cfg.soc_system_src_base_addr
-                                                 : cfg.soc_system_dst_base_addr;
-              end
+              a_addr = get_item_addr(item);
               `uvm_info(`gfn, $sformatf("received %s d_chan item with addr: %0x and data: %0x",
                                         if_name, a_addr, item.d_data), UVM_HIGH)
               process_tl_data_txn(if_name, a_addr, item);
@@ -815,29 +816,26 @@ class dma_scoreboard extends cip_base_scoreboard #(
     monitor_lsio_trigger();
   endtask
 
-  // Function to get the memory model data at provided address
+  // Get the memory model data at the given address. Models are ASID-keyed; the lookup is
+  // guarded so a config lacking a given ASID does not crash the scoreboard.
   function bit [7:0] get_model_data(asid_encoding_e asid, bit [63:0] addr);
-    case (asid)
-      OtInternalAddr: return cfg.mem_host.read_byte(addr);
-      SocControlAddr: return cfg.mem_ctn.read_byte(addr);
-      SocSystemAddr : return cfg.mem_sys.read_byte(addr);
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-      end
-    endcase
+    if (!cfg.mems.exists(asid)) begin
+      `uvm_error(`gfn, $sformatf("No memory model for Address space ID %s (port not present)",
+                                 asid.name()))
+      return '0;
+    end
+    return cfg.mems[asid].read_byte(addr);
   endfunction
 
   // Function to retrieve the next byte written into the destination FIFO
   // Note: that this is destructive in that it pops the data from the FIFO
   function bit [7:0] get_fifo_data(asid_encoding_e asid, bit [63:0] addr);
-    case (asid)
-      OtInternalAddr: return cfg.fifo_dst_host.read_byte(addr);
-      SocControlAddr: return cfg.fifo_dst_ctn.read_byte(addr);
-      SocSystemAddr : return cfg.fifo_dst_sys.read_byte(addr);
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-      end
-    endcase
+    if (!cfg.fifo_dst.exists(asid)) begin
+      `uvm_error(`gfn, $sformatf("No destination FIFO for Address space ID %s (port not present)",
+                                 asid.name()))
+      return '0;
+    end
+    return cfg.fifo_dst[asid].read_byte(addr);
   endfunction
 
   // Returns the bitmap of Status-type interrupts that are set because of bits in the `status`
@@ -1130,8 +1128,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
           dma_config.src_chunk_wrap = `gmv(ral.src_config.wrap);
           dma_config.dst_addr_inc = `gmv(ral.dst_config.increment);
           dma_config.src_addr_inc = `gmv(ral.src_config.increment);
-          dma_config.soc_system_src_base_addr = cfg.soc_system_src_base_addr;
-          dma_config.soc_system_dst_base_addr = cfg.soc_system_dst_base_addr;
+          // SoC System bus is full 64-bit (wide `dma_tl_agent`): no base-address window to mirror.
 
           `uvm_info(`gfn, $sformatf("dma_config\n %s",
                                     dma_config.sprint()), UVM_HIGH)
@@ -1459,15 +1456,13 @@ class dma_scoreboard extends cip_base_scoreboard #(
     endcase
   endfunction
 
+  // Reverse lookup of an interface name to its ASID (inverse of `cfg.asid_names`).
   function dma_pkg::asid_encoding_e if_name_to_asid(string if_name);
-    case (if_name)
-      "host": return dma_pkg::OtInternalAddr;
-      "ctn":  return dma_pkg::SocControlAddr;
-      "sys":  return dma_pkg::SocSystemAddr;
-      default: begin
-        `dv_error("Unknown interface name: %0s", if_name)
-      end
-    endcase
+    foreach (cfg.asid_names[asid]) begin
+      if (cfg.asid_names[asid] == if_name) return asid;
+    end
+    `dv_error("Unknown interface name: %0s", if_name)
+    return dma_pkg::OtInternalAddr;
   endfunction
 
 endclass
