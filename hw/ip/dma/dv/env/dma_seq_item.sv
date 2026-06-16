@@ -75,12 +75,6 @@ class dma_seq_item extends uvm_sequence_item;
   // Variable used to constrain destination address range to lie within the DMA-enabled address
   // range (consulted iff `valid_dma_config`).
   bit dst_addr_in_range;
-  // Note: Currently we have only a 32-bit TL-UL model of the SoC System bus, but the DMA controller
-  // is restricted to transfers of less than 4GiB so we randomize the start address of the TL-UL
-  // memory model and use an adapter to adjust the addresses within the bus traffic.
-  rand bit [SYS_ADDR_WIDTH-1:0] soc_system_src_base_addr;
-  rand bit [SYS_ADDR_WIDTH-1:0] soc_system_dst_base_addr;
-
   // Bit used to indicate if the configuration is valid
   bit is_valid_config;
   // LSIO trigger input value to be driven from testbench
@@ -112,8 +106,6 @@ class dma_seq_item extends uvm_sequence_item;
     `uvm_field_array_int(intr_src_addr, UVM_DEFAULT)
     `uvm_field_array_int(intr_src_wr_val, UVM_DEFAULT)
     `uvm_field_array_int(sha2_digest, UVM_DEFAULT)
-    `uvm_field_int(soc_system_src_base_addr, UVM_DEFAULT)
-    `uvm_field_int(soc_system_dst_base_addr, UVM_DEFAULT)
     `uvm_field_int(lsio_trigger_i, UVM_DEFAULT)
   `uvm_object_utils_end
 
@@ -144,13 +136,6 @@ class dma_seq_item extends uvm_sequence_item;
   // Constrain array size to number of handshake interrupt signals
   constraint intr_src_wr_val_c {
     intr_src_wr_val.size() == dma_reg_pkg::NumIntClearSources;
-  }
-
-  // Constrain the Soc System source base address so that we have a full 4GiB window and ensure
-  // that it's word-aligned.
-  constraint soc_sys_src_base_c {
-    soc_system_src_base_addr <= {SYS_ADDR_WIDTH{1'b1}} - 32'hFFFF_FFFF;
-    soc_system_src_base_addr[1:0] == 2'b00;
   }
 
   constraint src_addr_c {
@@ -194,18 +179,7 @@ class dma_seq_item extends uvm_sequence_item;
         }
       }
     }
-    if (src_asid == SocSystemAddr) {
-      // Source address range must lie within the selected 4GiB window and not spill over.
-      src_addr >= soc_system_src_base_addr &&
-      src_addr - soc_system_src_base_addr <= 32'hFFFF_FFFF - total_data_size;
-    }
-  }
-
-  // Constrain the Soc System destination base address so that we have a full 4GiB window and ensure
-  // that it's word-aligned.
-  constraint soc_sys_dst_base_c {
-    soc_system_dst_base_addr <= {SYS_ADDR_WIDTH{1'b1}} - 32'hFFFF_FFFF;
-    soc_system_dst_base_addr[1:0] == 2'b00;
+    // SoC System bus is full 64-bit (wide `dma_tl_agent`): no 4GiB-window constraint on `src_addr`.
   }
 
   constraint dst_addr_c {
@@ -250,11 +224,7 @@ class dma_seq_item extends uvm_sequence_item;
         }
       }
     }
-    if (dst_asid == SocSystemAddr) {
-      // Source address range must lie within the selected 4GiB window and not spill over.
-      dst_addr >= soc_system_dst_base_addr &&
-      dst_addr - soc_system_dst_base_addr <= 32'hFFFF_FFFF - total_data_size;
-    }
+    // SoC System bus is full 64-bit (wide `dma_tl_agent`): no 4GiB-window constraint on `dst_addr`.
 
     if (src_asid == dst_asid) {
       // Avoid overlap between source and destination buffers, also leaving a slight gap so
@@ -262,20 +232,8 @@ class dma_seq_item extends uvm_sequence_item;
       //
       // `total_data_size` here is often larger than the valid addressable range in
       // handshake mode, but keeps things simpler
-      if (src_asid == SocSystemAddr) {
-        // We must consider the two SoC System base addresses that have been chosen; the key
-        // point to understand here it is that it is permissible for the two buffers to overlap
-        // in the 64-bit address space in this case, but they _must not_ overlap within the
-        // single TL-UL 32-bit address space after the source and destination addresses have
-        // been translated.
-        (dst_addr - soc_system_dst_base_addr >
-         src_addr - soc_system_src_base_addr + total_data_size + 'h10) ||
-        (src_addr - soc_system_src_base_addr >
-         dst_addr - soc_system_dst_base_addr + total_data_size + 'h10);
-      } else {
-        (dst_addr > src_addr + total_data_size + 'h10) ||
-        (src_addr > dst_addr + total_data_size + 'h10);
-      }
+      (dst_addr > src_addr + total_data_size + 'h10) ||
+      (src_addr > dst_addr + total_data_size + 'h10);
     }
   }
 
@@ -363,11 +321,7 @@ class dma_seq_item extends uvm_sequence_item;
   constraint mem_range_limit_c {
     // Set solver order to make sure mem range limit is randomized correctly in case
     // valid_dma_config is set.
-    //
-    // We also choose the SoC System base addresses up front, because these are simple and cannot
-    // later be invalidated. We do this even if not waiving full testing because in that case they
-    // shall simply be ignored.
-    solve soc_system_src_base_addr, soc_system_dst_base_addr, mem_range_base before mem_range_limit;
+    solve mem_range_base before mem_range_limit;
     // For valid DMA config, [mem_range_base, mem_range_limit) describes the addressable memory
     // window, but it need not always be enabled, and only applies to transfers crossing the divide
     // (importing to/exporting from OT)
@@ -539,28 +493,7 @@ class dma_seq_item extends uvm_sequence_item;
       end
     end
 
-    // Use of the System bus imposes additional constraints that have had to be introduced to
-    // permit testing in block level DV (see `soc_system_src|dst_base_addr` above); if the transfer
-    // lies outside of the specified 4GiB window then reads or writes will be faulted by the adapter
-    // interface.
-    if (src_asid == SocSystemAddr) begin
-      logic [SYS_ADDR_WIDTH-1:0] end_addr = soc_system_src_base_addr + 32'hFFFF_FFFC;
-      if (src_addr < soc_system_src_base_addr || src_addr > end_addr ||
-          end_addr - src_addr < src_memory_range) begin
-        `uvm_info(`gfn, " - Limitations of 32-bit TL-UL for testing System bus Reads not met",
-                  UVM_MEDIUM)
-        valid_config = 0;
-      end
-    end
-    if (dst_asid == SocSystemAddr) begin
-      logic [SYS_ADDR_WIDTH-1:0] end_addr = soc_system_dst_base_addr + 32'hFFFF_FFFC;
-      if (dst_addr < soc_system_dst_base_addr || dst_addr > end_addr ||
-          end_addr - dst_addr < dst_memory_range) begin
-        `uvm_info(`gfn, " - Limitations of 32-bit TL-UL for testing System bus Writes not met",
-                  UVM_MEDIUM)
-        valid_config = 0;
-      end
-    end
+    // SoC System bus is full 64-bit (wide `dma_tl_agent`): no 4GiB-window restriction applied.
 
     // Check that the ASIDs are valid
     if (!(dst_asid inside {OtInternalAddr, SocControlAddr, SocSystemAddr})) begin
