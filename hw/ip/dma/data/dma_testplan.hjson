@@ -312,8 +312,41 @@
         stage: V2S
         tests: ["dma_config_lock"]
       }
+      {
+        name: dma_hashing_partial
+        desc: '''
+              Directed test for the inline-hashing deferred-wait corner of the within-chunk fast path.
+
+              Stimulus:
+              - Configure memory-to-memory SHA (256/384/512) transfers with a total size that is not
+                a multiple of 4 bytes, forcing a partial final beat (4B transfer width).
+              - Drive responses with zero access/response delay so the DMA feeds the SHA engine
+                faster than it can consume, provoking the DmaShaWait back-pressure state on the beat
+                preceding the partial final beat.
+
+              Checking:
+              - The scoreboard's predicted SHA digest must match the DUT digest; a corrupted
+                byte-enable on the deferred-hash path would change the digest.
+              - Source/destination data and addresses are checked as in the other transfer tests.
+              '''
+        stage: V2
+        tests: ["dma_hashing_partial"]
+      }
     ]
     covergroups: [
+      {
+        name: dma_fsm_cg
+        desc: '''
+              Cover the DMA control FSM:
+              - Every control state is visited, including the inline-hashing wait state (DmaShaWait)
+                and DmaShaFinalize.
+              - FSM transitions of the within-chunk fast path: the direct next-beat edge
+                (DmaWaitWriteResponse -> DmaSendRead) that skips DmaAddrSetup, the first-beat edge
+                (DmaAddrSetup -> DmaSendRead), and the deferred-hash edge (DmaShaWait -> DmaAddrSetup).
+              - The deferred-hash corner: waiting in DmaShaWait while the next beat is the partial
+                final beat, which stresses the byte-enable handling of the fast path.
+              '''
+      }
       {
         name: dma_config_cg
         desc: '''
