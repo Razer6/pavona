@@ -89,6 +89,11 @@
       reseed: 5
     }
     {
+      name: dma_hashing_partial
+      uvm_test_seq: dma_hashing_partial_vseq
+      reseed: 20
+    }
+    {
       name: dma_config_lock
       uvm_test_seq: dma_config_lock_vseq
       reseed: 15
