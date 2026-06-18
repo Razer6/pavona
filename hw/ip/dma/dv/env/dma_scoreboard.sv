@@ -212,6 +212,10 @@ class dma_scoreboard extends cip_base_scoreboard #(
     bit [31:0] offset = num_bytes_transferred;
     bit memset = !dma_config.op_reads();
 
+    // Inline AES rewrites the moved data (ciphertext/plaintext), so the copy/memset byte comparison
+    // does not apply. The directed AES sequence self-checks the destination and tag against the KAT.
+    if (dma_config.is_aes) return;
+
     `uvm_info(`gfn, $sformatf("if_name %s: write addr 0x%0x mask 0x%0x data 0x%0x", if_name,
                               a_addr, item.a_mask, item.a_data), UVM_HIGH)
 
@@ -907,6 +911,10 @@ class dma_scoreboard extends cip_base_scoreboard #(
     // Is the destination a FIFO?
     bit dst_fifo = dma_config.get_write_fifo_en();
 
+    // Inline AES transforms the data; dst != src by design. The directed AES sequence checks the
+    // ciphertext/plaintext and tag against the KAT, so skip the copy comparison.
+    if (dma_config.is_aes) return;
+
     `uvm_info(`gfn, $sformatf("Checking output data [0x%0x,0x%0x) against 0%0x byte(s) of source",
                               dst_addr, dst_addr + size, size), UVM_MEDIUM)
     `uvm_info(`gfn, $sformatf("  (src_addr 0x%0x at reference offset 0x%0x)", src_addr, src_offset),
@@ -1212,6 +1220,9 @@ class dma_scoreboard extends cip_base_scoreboard #(
           dma_config.opcode = decode_opcode(`gmv(ral.control.read_en),
                                             `gmv(ral.control.write_en),
                                             `gmv(ral.control.digest));
+          // Capture whether this is an inline-AES transfer (CONTROL.aes_op != Off) at start, so the
+          // data-comparison skip does not depend on a live mirror read later in the transfer.
+          dma_config.is_aes = (`gmv(ral.control.aes_op) != 0);
           `uvm_info(`gfn, $sformatf("Got opcode = %s (read_en=%0b write_en=%0b digest=%0d)",
                                     dma_config.opcode.name(), `gmv(ral.control.read_en),
                                     `gmv(ral.control.write_en), `gmv(ral.control.digest)), UVM_HIGH)

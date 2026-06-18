@@ -54,6 +54,8 @@ class dma_env extends cip_base_env #(
   // PHASE - CONNECT
   function void connect_phase(uvm_phase phase);
     super.connect_phase(phase);
+    // Publish the scoreboard handle into the cfg so vseqs can set expected alerts.
+    cfg.scoreboard_h = scoreboard;
 
     // Wire each present agent's monitor analysis ports to the scoreboard FIFO for its per-port
     // interface name, and expose its sequencer in the virtual sequencer keyed by global port index

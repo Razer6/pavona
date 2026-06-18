@@ -109,6 +109,11 @@
       reseed: 15
     }
     {
+      name: dma_aes_smoke
+      uvm_test_seq: dma_aes_smoke_vseq
+      reseed: 1
+    }
+    {
       name: dma_config_lock
       uvm_test_seq: dma_config_lock_vseq
       reseed: 15
@@ -143,7 +148,7 @@
   regressions: [
     {
       name: smoke
-      tests: ["dma_memory_smoke", "dma_handshake_smoke", "dma_generic_smoke"]
+      tests: ["dma_memory_smoke", "dma_handshake_smoke", "dma_generic_smoke", "dma_aes_smoke"]
     }
     {
       name: stress
