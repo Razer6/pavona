@@ -389,7 +389,9 @@ module dma
 
   // Fiddle out control bits into captured state
   always_comb begin
-    control_d.opcode                     = opcode_e'(reg2hw.control.opcode.q);
+    control_d.read_en                    = reg2hw.control.read_en.q;
+    control_d.write_en                   = reg2hw.control.write_en.q;
+    control_d.digest_sel                 = dma_digest_e'(reg2hw.control.digest.q);
     control_d.cfg_handshake_en           = reg2hw.control.hardware_handshake_enable.q;
     control_d.cfg_digest_swap            = reg2hw.control.digest_swap.q;
     control_d.range_valid                = reg2hw.range_valid.q;
@@ -399,7 +401,7 @@ module dma
 
   prim_flop_en #(
     .Width($bits(control_state_t))
-  ) u_opcode (
+  ) u_control (
     .clk_i  ( gated_clk     ),
     .rst_ni ( rst_ni        ),
     .en_i   ( capture_state ),
@@ -515,7 +517,29 @@ module dma
   digest_mode_e sha2_mode;
   sha_word64_t [7:0] sha2_digest;
 
-  assign use_inline_hashing = control_q.opcode inside {OpcSha256,  OpcSha384, OpcSha512};
+  // Decode of the captured control fields into the datapath enables. All consumers derive
+  // from captured `control_q`, never the live register interface.
+  logic                      do_read, do_write;
+  dma_digest_e               digest_sel;
+  logic [top_pkg::TL_DW-1:0] fill_value;
+  assign do_read    = control_q.read_en;
+  assign do_write   = control_q.write_en;
+  assign digest_sel = control_q.digest_sel;
+  // Memset fill pattern (captured `src_addr_lo`); replicated across the bus width by the
+  // destination transfer width so any address alignment / final partial beat is covered.
+  // Little-endian: the partial final beat (dst BE 0001/0011/0111) writes the low byte(s).
+  // Independent of any read steering since memset performs no source read.
+  logic [top_pkg::TL_DW-1:0] fill_replicate;
+  assign fill_value = src_addr_q[31:0];
+  always_comb begin
+    unique case (transfer_width_q)
+      3'b001:  fill_replicate = {4{fill_value[7:0]}};
+      3'b010:  fill_replicate = {2{fill_value[15:0]}};
+      default: fill_replicate = fill_value[31:0];
+    endcase
+  end
+
+  assign use_inline_hashing = (digest_sel != DigestNone);
   // When reaching DmaShaFinalize, we are consuming data and start computing the digest value
   assign sha2_hash_process = (ctrl_state_q == DmaShaFinalize);
 
@@ -544,13 +568,13 @@ module dma
   logic [63:0] sha2_message_len_bits;
   assign sha2_message_len_bits = reg2hw.total_data_size.q << 3;
 
-  // Translate the DMA opcode to the SHA2 digest mode
+  // Translate the digest selector to the SHA2 digest mode
   always_comb begin
-    unique case (control_q.opcode)
-      OpcSha256: sha2_mode = SHA2_256;
-      OpcSha384: sha2_mode = SHA2_384;
-      OpcSha512: sha2_mode = SHA2_512;
-      default:   sha2_mode = SHA2_None;
+    unique case (digest_sel)
+      DigestSha256: sha2_mode = SHA2_256;
+      DigestSha384: sha2_mode = SHA2_384;
+      DigestSha512: sha2_mode = SHA2_512;
+      default:      sha2_mode = SHA2_None;
     endcase
   end
 
@@ -596,7 +620,7 @@ module dma
       rd_issue_addr = src_addr_d;
       rd_issue_be   = req_src_be_d;
     end else begin
-      rd_issue      = (ctrl_state_q == DmaSendRead);
+      rd_issue      = do_read && (ctrl_state_q == DmaSendRead);
       rd_issue_addr = src_addr_q;
       rd_issue_be   = req_src_be_q;
     end
@@ -607,10 +631,10 @@ module dma
       wr_issue_be   = data_rdata.dst_be;
       wr_issue_data = data_rdata.data;
     end else begin
-      wr_issue      = (ctrl_state_q == DmaSendWrite);
+      wr_issue      = do_write && (ctrl_state_q == DmaSendWrite);
       wr_issue_addr = dst_addr_q;
       wr_issue_be   = req_dst_be_q;
-      wr_issue_data = read_return_data_q;
+      wr_issue_data = do_read ? read_return_data_q : fill_replicate;
     end
   end
 
@@ -748,7 +772,7 @@ module dma
 
     dma_state_error = 1'b0;
 
-    sha2_hash_start      = 1'b0;
+    sha2_hash_start = 1'b0;
     sha2_valid           = 1'b0;
     sha2_digest_set      = 1'b0;
     sha2_consumed_d      = sha2_consumed_q;
@@ -881,7 +905,14 @@ module dma
             next_error[DmaSizeErr] = 1'b1;
           end
 
-          if (!(control_q.opcode inside {OpcCopy, OpcSha256, OpcSha384, OpcSha512})) begin
+          // Legal-combination check on the captured control fields. Reject combinations that
+          // would be a no-op, hash a constant, discard data without output, or pair the
+          // hardware handshake with a missing read or write path.
+          if ((!do_read && !do_write)                        ||  // no-op
+              ((digest_sel != DigestNone) && !do_read)       ||  // hash with no source data
+              (!do_write && (digest_sel == DigestNone))      ||  // read-and-discard, no output
+              (control_q.cfg_handshake_en && !do_read)       ||  // handshake drains via reads
+              (control_q.cfg_handshake_en && !do_write)) begin   // handshake completion via writes
             next_error[DmaOpcodeErr] = 1'b1;
           end
 
@@ -892,10 +923,10 @@ module dma
 
           // Ensure that ASIDs have valid values, i.e., resolve to a configured port.
           // SEC_CM: ASID.INTERSIG.MUBI
-          if (!src_asid_valid) begin
+          if (do_read && !src_asid_valid) begin
             next_error[DmaAsidErr] = 1'b1;
           end
-          if (!dst_asid_valid) begin
+          if (do_write && !dst_asid_valid) begin
             next_error[DmaAsidErr] = 1'b1;
           end
 
@@ -905,19 +936,22 @@ module dma
             next_error[DmaBaseLimitErr] = 1'b1;
           end
 
-          // In 4-byte transfers, source and destination address must be 4-byte aligned
-          if (reg2hw.transfer_width.q == DmaXfer4BperTxn && |reg2hw.src_addr_lo.q[1:0]) begin
+          // In 4-byte transfers, source and destination address must be 4-byte aligned.
+          // Source checks apply only when reading (for memset src_addr_lo is the fill pattern).
+          if (do_read && reg2hw.transfer_width.q == DmaXfer4BperTxn && |reg2hw.src_addr_lo.q[1:0]) begin
             next_error[DmaSrcAddrErr] = 1'b1;
           end
-          if (reg2hw.transfer_width.q == DmaXfer4BperTxn && |reg2hw.dst_addr_lo.q[1:0]) begin
+          // Destination checks apply only when writing (for verify dst_addr_lo is unused).
+          if (do_write && reg2hw.transfer_width.q == DmaXfer4BperTxn && |reg2hw.dst_addr_lo.q[1:0]) begin
             next_error[DmaDstAddrErr] = 1'b1;
           end
 
           // In 2-byte transfers, source and destination address must be 2-byte aligned
-          if (reg2hw.transfer_width.q == DmaXfer2BperTxn && reg2hw.src_addr_lo.q[0]) begin
+          if (do_read && reg2hw.transfer_width.q == DmaXfer2BperTxn && reg2hw.src_addr_lo.q[0]) begin
             next_error[DmaSrcAddrErr] = 1'b1;
           end
-          if (reg2hw.transfer_width.q == DmaXfer2BperTxn && reg2hw.dst_addr_lo.q[0]) begin
+          if (do_write && reg2hw.transfer_width.q == DmaXfer2BperTxn &&
+              reg2hw.dst_addr_lo.q[0]) begin
             next_error[DmaDstAddrErr] = 1'b1;
           end
 
@@ -925,23 +959,13 @@ module dma
           // range-checked, its address range must fall within the DMA enabled memory region.
           //
           // The descriptor-indexed checks below resolve `PortDesc`/`PortIs32` via
-          // src/dst_port_idx, which default to port 0 on an invalid ASID. Gate them on
-          // both ASIDs being valid so an invalid ASID raises only DmaAsidErr (above) and
+          // src/dst_port_idx, which default to port 0 on an invalid ASID. Gate each side on
+          // its own ASID being valid so an invalid ASID raises only DmaAsidErr (above) and
           // not a spurious DmaSrc/DstAddrErr from the bogus default index.
-          if (src_asid_valid && dst_asid_valid) begin
-            // Destination is the range-checked endpoint (e.g. SoC -> OT copy).
-            if (PortDesc[dst_port_idx].range_check && !PortDesc[src_port_idx].range_check &&
-                // Out-of-bound check
-                ((reg2hw.dst_addr_lo.q > control_q.enabled_memory_range_limit) ||
-                  (reg2hw.dst_addr_lo.q < control_q.enabled_memory_range_base) ||
-                  ((DMA_ADDR_WIDTH'(reg2hw.dst_addr_lo.q) +
-                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
-                    DMA_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
-              next_error[DmaDstAddrErr] = 1'b1;
-            end
-
+          if (do_read && src_asid_valid) begin
             // Source is the range-checked endpoint (e.g. OT -> SoC copy).
-            if (PortDesc[src_port_idx].range_check && !PortDesc[dst_port_idx].range_check &&
+            if (PortDesc[src_port_idx].range_check &&
+                (!do_write || !PortDesc[dst_port_idx].range_check) &&
                   // Out-of-bound check
                   ((reg2hw.src_addr_lo.q > control_q.enabled_memory_range_limit) ||
                   (reg2hw.src_addr_lo.q < control_q.enabled_memory_range_base)   ||
@@ -954,6 +978,20 @@ module dma
             // 32-bit source port: upper address bits must be zero (32-bit address space).
             if (PortIs32[src_port_idx] && (|reg2hw.src_addr_hi.q)) begin
               next_error[DmaSrcAddrErr] = 1'b1;
+            end
+          end
+
+          if (do_write && dst_asid_valid) begin
+            // Destination is the range-checked endpoint (e.g. SoC -> OT copy).
+            if (PortDesc[dst_port_idx].range_check &&
+                (!do_read || !PortDesc[src_port_idx].range_check) &&
+                // Out-of-bound check
+                ((reg2hw.dst_addr_lo.q > control_q.enabled_memory_range_limit) ||
+                  (reg2hw.dst_addr_lo.q < control_q.enabled_memory_range_base) ||
+                  ((DMA_ADDR_WIDTH'(reg2hw.dst_addr_lo.q) +
+                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
+                    DMA_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
+              next_error[DmaDstAddrErr] = 1'b1;
             end
 
             // 32-bit destination port: upper address bits must be zero (32-bit address space).
@@ -969,7 +1007,7 @@ module dma
           // Decide whether the read-ahead burst datapath can be used: plain copy, no inline
           // hashing, no hardware handshake, a single chunk (chunk >= total), and both ends on
           // TL-UL ports (OT internal / SoC control). Otherwise use the serial datapath.
-          fast_mode_d = (control_q.opcode == OpcCopy) &&
+          fast_mode_d = do_read && do_write && !use_inline_hashing &&
                         !control_q.cfg_handshake_en &&
                         (reg2hw.chunk_data_size.q >= reg2hw.total_data_size.q) &&
                         src_asid_valid && dst_asid_valid;
@@ -1012,7 +1050,7 @@ module dma
           capture_addr           = 1'b1;
           capture_be             = 1'b1;
           sha2_consumed_d        = 1'b0;
-          ctrl_state_d           = DmaSendRead;
+          ctrl_state_d           = do_read ? DmaSendRead : DmaSendWrite;
         end
 
         DmaSendRead,
@@ -1028,7 +1066,34 @@ module dma
                 sha2_valid      = 1'b1;
                 sha2_consumed_d = sha2_ready;
               end
-              ctrl_state_d = DmaSendWrite;
+              if (do_write) begin
+                ctrl_state_d = DmaSendWrite;
+              end else begin
+                // Verify: the read itself commits the beat because there is no destination
+                // write. Hashing is mandatory for this legal control combination.
+                transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+                chunk_byte_d          = chunk_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+                capture_transfer_byte = 1'b1;
+                capture_chunk_byte    = 1'b1;
+
+                if (!sha2_ready) begin
+                  ctrl_state_d = DmaShaWait;
+                end else if (transfer_byte_d >= reg2hw.total_data_size.q) begin
+                  ctrl_state_d = DmaShaFinalize;
+                end else if (chunk_byte_d >= reg2hw.chunk_data_size.q) begin
+                  clear_go     = !control_q.cfg_handshake_en;
+                  chunk_done   = !control_q.cfg_handshake_en;
+                  ctrl_state_d = DmaIdle;
+                end else begin
+                  setup_transfer_byte    = transfer_byte_d;
+                  setup_chunk_byte       = chunk_byte_d;
+                  capture_transfer_width = 1'b1;
+                  capture_addr           = 1'b1;
+                  capture_be             = 1'b1;
+                  sha2_consumed_d        = 1'b0;
+                  ctrl_state_d           = DmaSendRead;
+                end
+              end
             end
           end else if (read_gnt) begin
             // Only Request handled
@@ -1087,7 +1152,7 @@ module dma
                   capture_addr           = 1'b1;
                   capture_be             = 1'b1;
                   sha2_consumed_d        = 1'b0;
-                  ctrl_state_d           = DmaSendRead;
+                  ctrl_state_d           = do_read ? DmaSendRead : DmaSendWrite;
                 end else begin
                   // Inline hashing: keep the dedicated setup cycle (SHA-bound path).
                   ctrl_state_d = DmaAddrSetup;
@@ -1329,7 +1394,7 @@ module dma
     //  - fixed-address mode: always the base address;
     //  - wrapped increment:  base + offset within the current chunk (resets each chunk);
     //  - plain increment:    base + total transferred offset (continuous across chunks).
-    if (reg2hw.src_config.increment.q == AddrNoIncrement) begin
+    if (!do_read || (reg2hw.src_config.increment.q == AddrNoIncrement)) begin
       src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q};
     end else if (reg2hw.src_config.wrap.q == AddrWrapChunk) begin
       src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} + DMA_ADDR_WIDTH'(setup_chunk_byte);
@@ -1338,7 +1403,7 @@ module dma
                    DMA_ADDR_WIDTH'(setup_transfer_byte);
     end
 
-    if (reg2hw.dst_config.increment.q == AddrNoIncrement) begin
+    if (!do_write || (reg2hw.dst_config.increment.q == AddrNoIncrement)) begin
       dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q};
     end else if (reg2hw.dst_config.wrap.q == AddrWrapChunk) begin
       dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} + DMA_ADDR_WIDTH'(setup_chunk_byte);
@@ -1517,9 +1582,11 @@ module dma
   // can use the data from the bus, otherwise the captured data from the flop
   //
   // Note: the SHA2 logic expects the `data` and `mask` fields to be populated from the MSBs down.
+  // SHA2 consumes read data. Verify has no destination write, so use the source
+  // byte-enable directly rather than a stale destination mask.
   assign sha2_data.data = {<<8{capture_return_data ? read_return_data_d :
                                                      read_return_data_q}};
-  assign sha2_data.mask = {<<1{req_dst_be_q}};
+  assign sha2_data.mask = {<<1{req_src_be_q}};
 
   // Interrupt logic
   prim_intr_hw #(
@@ -1620,11 +1687,16 @@ module dma
     update_dst_addr_reg = 1'b0;
     update_src_addr_reg = 1'b0;
     if (data_move_state && (ctrl_state_d == DmaIdle)) begin
-      if (reg2hw.src_config.increment.q == AddrNoIncrement &&
+      // Memset (no read) keeps `src_addr_lo` as the fill pattern; writing back the chunk-advanced
+      // source address would corrupt it, so suppress the source write-back.
+      if (do_read &&
+          reg2hw.src_config.increment.q == AddrNoIncrement &&
           reg2hw.src_config.wrap.q == AddrNoWrapChunk) begin
         update_src_addr_reg = 1'b1;
       end
-      if (reg2hw.dst_config.increment.q == AddrNoIncrement &&
+      // Verify (no write) never advances a destination address, so suppress its write-back.
+      if (do_write &&
+          reg2hw.dst_config.increment.q == AddrNoIncrement &&
           reg2hw.dst_config.wrap.q == AddrNoWrapChunk) begin
         update_dst_addr_reg = 1'b1;
       end
@@ -1697,17 +1769,17 @@ module dma
     end
 
     // Only mux the digest data when sha2_digest_set is set. Setting the digest happens during the
-    // DmaFinalze state, where we need to use the stored and locked `control_q.opcode` value.
+    // DmaFinalze state, where we need to use the stored and locked `digest_sel` value.
     // In case of clear_sha_status being asserted, the default value from hw2reg = '0; clears
     // the digest
     if (sha2_digest_set) begin
       for (int unsigned i = 0; i < NR_SHA_DIGEST_ELEMENTS / 2; i++) begin
-        unique case (control_q.opcode)
-          OpcSha256: begin
+        unique case (digest_sel)
+          DigestSha256: begin
             hw2reg.sha2_digest[i].d = conv_endian32(sha2_digest[i][0 +: 32],
                                                     control_q.cfg_digest_swap);
           end
-          OpcSha384: begin
+          DigestSha384: begin
             if (i < 6) begin
               hw2reg.sha2_digest[i*2].d     = conv_endian32(sha2_digest[i][32 +: 32],
                                                             control_q.cfg_digest_swap);

@@ -461,16 +461,30 @@
       swaccess: "rw"
       hwaccess: "hro"
       fields: [
-        { bits: "3:0"
-          name: "opcode"
+        { bits: "0"
+          name: "read_en"
+          resval: 0x1
+          desc: '''
+                1 = read from source memory; 0 = memset (write data taken from SRC_ADDR_LO pattern).
+                '''
+        }
+        { bits: "1"
+          name: "write_en"
+          resval: 0x1
+          desc: '''
+                1 = write to destination; 0 = verify (digest-only, no write).
+                '''
+        }
+        { bits: "3:2"
+          name: "digest"
           resval: 0x0
           desc: '''
-                Defines the type of DMA operations.
+                Selects the inline hashing digest computed over the moved data.
                 '''
           enum: [
             { value: "0",
-              name: "COPY"
-              desc: "Copy Operation, Simple copy from source to destination."
+              name: "NONE"
+              desc: "No inline hashing."
             }
             { value: "1",
               name: "SHA256"

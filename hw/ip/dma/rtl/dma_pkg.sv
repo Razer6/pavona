@@ -89,13 +89,13 @@ package dma_pkg;
 
   parameter int unsigned DmaPortIdxW = prim_util_pkg::vbits(NumPortsDefault);
 
-  // Supported opcodes by the DMA
-  typedef enum logic [3:0] {
-    OpcCopy   = 4'h0,
-    OpcSha256 = 4'h1,
-    OpcSha384 = 4'h2,
-    OpcSha512 = 4'h3
-  } opcode_e;
+  // Inline-hashing digest selector carried in the captured control state.
+  typedef enum logic [1:0] {
+    DigestNone   = 2'd0,
+    DigestSha256 = 2'd1,
+    DigestSha384 = 2'd2,
+    DigestSha512 = 2'd3
+  } dma_digest_e;
 
   // Named bit definitions for the SRC_ and DST_CTRL register for convenience
   parameter bit AddrIncrement   = 1'b1;
@@ -106,7 +106,9 @@ package dma_pkg;
   // Control state captured during the operation
   typedef struct packed {
     // Control register
-    opcode_e    opcode;
+    logic        read_en;
+    logic        write_en;
+    dma_digest_e digest_sel;
     logic       cfg_handshake_en;
     logic       cfg_digest_swap;
     logic       range_valid;
