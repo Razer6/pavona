@@ -289,29 +289,50 @@ TEST_F(HandshakeTest, DisableBadArg) {
 }
 
 // DMA start tests
-class StartTest
-    : public DmaTestInitialized,
-      public testing::WithParamInterface<dif_dma_transaction_opcode_t> {};
+//
+// Each operation selector decodes into the orthogonal CONTROL fields
+// (read_en, write_en, digest); the test asserts the exact CONTROL write.
+typedef struct start_op {
+  dif_dma_transaction_opcode_t opcode;
+  bool read_en;
+  bool write_en;
+  uint32_t digest;
+} start_op_t;
+
+class StartTest : public DmaTestInitialized,
+                  public testing::WithParamInterface<start_op_t> {};
 
 TEST_P(StartTest, Success) {
-  dif_dma_transaction_opcode_t opcode = GetParam();
+  start_op_t op = GetParam();
   EXPECT_READ32(DMA_CONTROL_REG_OFFSET,
                 {{DMA_CONTROL_HARDWARE_HANDSHAKE_ENABLE_BIT, true}});
   EXPECT_WRITE32(DMA_CONTROL_REG_OFFSET,
                  {
-                     {DMA_CONTROL_OPCODE_OFFSET, opcode},
+                     {DMA_CONTROL_READ_EN_BIT, op.read_en},
+                     {DMA_CONTROL_WRITE_EN_BIT, op.write_en},
+                     {DMA_CONTROL_DIGEST_OFFSET, op.digest},
                      {DMA_CONTROL_INITIAL_TRANSFER_BIT, true},
                      {DMA_CONTROL_GO_BIT, true},
                      {DMA_CONTROL_HARDWARE_HANDSHAKE_ENABLE_BIT, true},
                  });
 
-  EXPECT_DIF_OK(dif_dma_start(&dma_, opcode));
+  EXPECT_DIF_OK(dif_dma_start(&dma_, op.opcode));
 }
 
 INSTANTIATE_TEST_SUITE_P(
     StartTest, StartTest,
-    testing::ValuesIn(std::vector<dif_dma_transaction_opcode_t>{{
-        kDifDmaCopyOpcode,
+    testing::ValuesIn(std::vector<start_op_t>{{
+        // Legacy copy/hash selectors map to (read_en=1, write_en=1, digest).
+        {kDifDmaCopyOpcode, true, true, DMA_CONTROL_DIGEST_VALUE_NONE},
+        {kDifDmaSha256Opcode, true, true, DMA_CONTROL_DIGEST_VALUE_SHA256},
+        {kDifDmaSha384Opcode, true, true, DMA_CONTROL_DIGEST_VALUE_SHA384},
+        {kDifDmaSha512Opcode, true, true, DMA_CONTROL_DIGEST_VALUE_SHA512},
+        // Memset: write only, fill pattern from SRC_ADDR_LO.
+        {kDifDmaMemsetOpcode, false, true, DMA_CONTROL_DIGEST_VALUE_NONE},
+        // Verify: read only, digest over source data.
+        {kDifDmaVerifySha256Opcode, true, false, DMA_CONTROL_DIGEST_VALUE_SHA256},
+        {kDifDmaVerifySha384Opcode, true, false, DMA_CONTROL_DIGEST_VALUE_SHA384},
+        {kDifDmaVerifySha512Opcode, true, false, DMA_CONTROL_DIGEST_VALUE_SHA512},
     }}));
 
 TEST_F(StartTest, BadArg) {
@@ -555,12 +576,27 @@ TEST_F(GetDigestLenTest, Success) {
 
   EXPECT_DIF_OK(dif_dma_get_digest_length(kDifDmaSha512Opcode, &digest_len));
   EXPECT_EQ(digest_len, 16);
+
+  // Verify operations carry the same digest as their hash counterparts.
+  EXPECT_DIF_OK(
+      dif_dma_get_digest_length(kDifDmaVerifySha256Opcode, &digest_len));
+  EXPECT_EQ(digest_len, 8);
+
+  EXPECT_DIF_OK(
+      dif_dma_get_digest_length(kDifDmaVerifySha384Opcode, &digest_len));
+  EXPECT_EQ(digest_len, 12);
+
+  EXPECT_DIF_OK(
+      dif_dma_get_digest_length(kDifDmaVerifySha512Opcode, &digest_len));
+  EXPECT_EQ(digest_len, 16);
 }
 
 TEST_F(GetDigestLenTest, BadArg) {
   uint32_t digest_len;
   EXPECT_DIF_BADARG(dif_dma_get_digest_length(kDifDmaSha256Opcode, nullptr));
+  // Operations without a digest report no length.
   EXPECT_DIF_BADARG(dif_dma_get_digest_length(kDifDmaCopyOpcode, &digest_len));
+  EXPECT_DIF_BADARG(dif_dma_get_digest_length(kDifDmaMemsetOpcode, &digest_len));
 }
 
 typedef struct digest_reg {
