@@ -25,8 +25,8 @@ package dma_env_pkg;
   `include "dv_macros.svh"
 
   // parameters
-  parameter uint NUM_ALERTS = 1;
-  parameter string LIST_OF_ALERTS[NUM_ALERTS] = {"fatal_fault"};
+  parameter uint NUM_ALERTS = 2;
+  parameter string LIST_OF_ALERTS[NUM_ALERTS] = {"fatal_fault", "recov_fault"};
 
   parameter uint CTN_ADDR_WIDTH = 32;
   parameter uint CTN_DATA_WIDTH = 32;
@@ -57,7 +57,12 @@ package dma_env_pkg;
     OpcMemset,       // read_en=0, write_en=1, digest=NONE    (fill from SRC_ADDR_LO pattern)
     OpcVerifySha256, // read_en=1, write_en=0, digest=SHA256  (read + hash, no write)
     OpcVerifySha384, // read_en=1, write_en=0, digest=SHA384
-    OpcVerifySha512  // read_en=1, write_en=0, digest=SHA512
+    OpcVerifySha512, // read_en=1, write_en=0, digest=SHA512
+    // Inline AES (read_en=1, write_en=1, digest=NONE; distinguished by CONTROL.aes_op/aes_mode).
+    OpcAesCtrEnc,    // AES-CTR encrypt
+    OpcAesCtrDec,    // AES-CTR decrypt
+    OpcAesGcmEnc,    // AES-GCM encrypt
+    OpcAesGcmDec     // AES-GCM decrypt
   } opcode_e;
 
   // Decode an operation to the captured CONTROL fields.
@@ -81,6 +86,24 @@ package dma_env_pkg;
     return (opcode_digest(op) != 2'd0);
   endfunction
 
+  // Inline-AES operation decode. CONTROL.aes_op {Off=0, Enc=1, Dec=2}, aes_mode {CTR=0, GCM=1}.
+  function automatic bit opcode_is_aes(opcode_e op);
+    return op inside {OpcAesCtrEnc, OpcAesCtrDec, OpcAesGcmEnc, OpcAesGcmDec};
+  endfunction
+  function automatic bit [1:0] opcode_aes_op(opcode_e op);
+    case (op)
+      OpcAesCtrEnc, OpcAesGcmEnc: return 2'd1; // Enc
+      OpcAesCtrDec, OpcAesGcmDec: return 2'd2; // Dec
+      default:                    return 2'd0; // Off
+    endcase
+  endfunction
+  function automatic bit opcode_aes_mode(opcode_e op);
+    return (op inside {OpcAesGcmEnc, OpcAesGcmDec}); // 1 = GCM
+  endfunction
+  function automatic bit opcode_aes_decrypt(opcode_e op);
+    return (op inside {OpcAesCtrDec, OpcAesGcmDec});
+  endfunction
+
   // Completion status bits (DV-internal)
   typedef enum {
     StatusDone,
@@ -101,6 +124,7 @@ package dma_env_pkg;
   } addr_space_id_t;
 
   // package sources
+  `include "dma_aes_kat.svh"
   `include "dma_seq_item.sv"
   `include "dma_handshake_mode_fifo.sv"
   // Wide (64-bit) TileLink transactor for the host64 SoC System port (must precede

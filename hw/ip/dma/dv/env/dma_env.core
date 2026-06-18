@@ -29,6 +29,7 @@ filesets:
       - dma_env_cov.sv: {is_include_file: true}
       - dma_virtual_sequencer.sv: {is_include_file: true}
       - dma_pull_seq.sv: {is_include_file: true}
+      - dma_aes_kat.svh: {is_include_file: true}
       - dma_seq_item.sv: {is_include_file: true}
       - dma_scoreboard.sv: {is_include_file: true}
       - dma_env.sv: {is_include_file: true}
@@ -51,6 +52,7 @@ filesets:
       - seq_lib/dma_overlap_vseq.sv: {is_include_file: true}
       - seq_lib/dma_memset_vseq.sv: {is_include_file: true}
       - seq_lib/dma_verify_vseq.sv: {is_include_file: true}
+      - seq_lib/dma_aes_smoke_vseq.sv: {is_include_file: true}
       - seq_lib/dma_generic_stress_vseq.sv: {is_include_file: true}
       - seq_lib/dma_memory_stress_vseq.sv: {is_include_file: true}
       - seq_lib/dma_handshake_stress_vseq.sv: {is_include_file: true}
