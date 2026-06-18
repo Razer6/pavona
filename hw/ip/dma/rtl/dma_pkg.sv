@@ -8,7 +8,7 @@ package dma_pkg;
   typedef logic [dma_reg_pkg::NumIntClearSources-1:0] lsio_trigger_t;
 
   // Possible error bits the DMA can raise
-  typedef enum logic [4:0] {
+  typedef enum logic [3:0] {
     DmaSrcAddrErr,
     DmaDstAddrErr,
     DmaOpcodeErr,
@@ -17,6 +17,7 @@ package dma_pkg;
     DmaBaseLimitErr,
     DmaRangeValidErr,
     DmaAsidErr,
+    DmaAesTagErr,
     DmaErrLast
   } dma_error_e;
 
@@ -97,6 +98,13 @@ package dma_pkg;
     DigestSha512 = 2'd3
   } dma_digest_e;
 
+  // Inline-AES operation selector (CONTROL.aes_op, plain encoding; reserved value -> opcode error).
+  typedef enum logic [1:0] {
+    DmaAesOpOff = 2'd0,
+    DmaAesOpEnc = 2'd1,
+    DmaAesOpDec = 2'd2
+  } dma_aes_op_e;
+
   // Named bit definitions for the SRC_ and DST_CTRL register for convenience
   parameter bit AddrIncrement   = 1'b1;
   parameter bit AddrNoIncrement = 1'b0;
@@ -112,6 +120,10 @@ package dma_pkg;
     logic       cfg_handshake_en;
     logic       cfg_digest_swap;
     logic       range_valid;
+    // Inline AES: cipher active (CONTROL.aes_op != Off), decrypt (Dec), and GCM mode.
+    logic       aes_en;
+    logic       aes_decrypt;
+    logic       aes_gcm;
     // Enabled memory base register
     logic [31:0] enabled_memory_range_base;
     // Enabled memory limit register
@@ -120,42 +132,51 @@ package dma_pkg;
 
 
   // Encoding generated with:
-  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 15 -n 8 \
+  // $ ./util/design/sparse-fsm-encode.py -d 3 -m 20 -n 9 \
   //     -s 8273645 --language=sv
+  // Existing encodings are zero-extended; the ninth bit provides code space for the inline-AES
+  // states while preserving a minimum Hamming distance of three.
   //
   // Hamming distance histogram:
   //
   //  0: --
   //  1: --
   //  2: --
-  //  3: |||||||||||||| (27.27%)
-  //  4: |||||||||||||||||||| (37.88%)
-  //  5: ||||||||||| (21.21%)
-  //  6: |||| (9.09%)
-  //  7: || (4.55%)
-  //  8: --
+  //  3: ||||||||||||| (25.26%)
+  //  4: ||||||||||||||||||| (34.74%)
+  //  5: |||||||||| (18.95%)
+  //  6: |||||| (11.58%)
+  //  7: |||| (7.89%)
+  //  8: | (1.58%)
+  //  9: --
   //
   // Minimum Hamming distance: 3
-  // Maximum Hamming distance: 7
-  // Minimum Hamming weight: 3
+  // Maximum Hamming distance: 8
+  // Minimum Hamming weight: 2
   // Maximum Hamming weight: 7
 
-  typedef enum logic [7:0] {
-    DmaIdle                 = 8'b11110111,
-    DmaClearIntrSrc         = 8'b10101100,
-    DmaWaitIntrSrcResponse  = 8'b00101011,
-    DmaAddrSetup            = 8'b11110000,
-    DmaSendRead             = 8'b01000011,
-    DmaWaitReadResponse     = 8'b00011111,
-    DmaSendWrite            = 8'b10010100,
-    DmaWaitWriteResponse    = 8'b11011001,
-    DmaError                = 8'b01010110,
-    DmaShaFinalize          = 8'b00110001,
-    DmaShaWait              = 8'b01111010,
-    DmaCfgValidate          = 8'b01001101,
-    DmaReadBurst            = 8'b10000001,
-    DmaWriteBurst           = 8'b10001010,
-    DmaRunPipe              = 8'b00011000
+  typedef enum logic [8:0] {
+    DmaIdle                 = 9'b011110111,
+    DmaClearIntrSrc         = 9'b010101100,
+    DmaWaitIntrSrcResponse  = 9'b000101011,
+    DmaAddrSetup            = 9'b011110000,
+    DmaSendRead             = 9'b001000011,
+    DmaWaitReadResponse     = 9'b000011111,
+    DmaSendWrite            = 9'b010010100,
+    DmaWaitWriteResponse    = 9'b011011001,
+    DmaError                = 9'b001010110,
+    DmaShaFinalize          = 9'b000110001,
+    DmaShaWait              = 9'b001111010,
+    DmaCfgValidate          = 9'b001001101,
+    DmaReadBurst            = 9'b010000001,
+    DmaWriteBurst           = 9'b010001010,
+    DmaRunPipe              = 9'b000011000,
+    // Inline AES block-serial sub-FSM.
+    DmaAesGather            = 9'b100000101,
+    DmaAesProcess           = 9'b100001110,
+    DmaAesScatter           = 9'b100010010,
+    DmaAesGhashAad          = 9'b100101000,
+    DmaAesTag               = 9'b100110100
   } dma_ctrl_state_e;
 
   // Maximum number of outstanding TL-UL requests per host port. >1 enables the read-ahead

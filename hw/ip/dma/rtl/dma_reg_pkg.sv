@@ -8,17 +8,19 @@ package dma_reg_pkg;
 
   // Param list
   parameter int NumIntClearSources = 11;
-  parameter int NumAlerts = 1;
+  parameter int NumAadWords = 8;
+  parameter int NumAlerts = 2;
 
   // Address widths within the block
   parameter int BlockAw = 9;
 
   // Number of registers for every interface
-  parameter int NumRegs = 63;
+  parameter int NumRegs = 100;
 
   // Alert indices
   typedef enum int {
-    AlertFatalFaultIdx = 0
+    AlertFatalFaultIdx = 0,
+    AlertRecovFaultIdx = 1
   } dma_alert_idx_t;
 
   ////////////////////////////
@@ -65,8 +67,14 @@ package dma_reg_pkg;
   } dma_reg2hw_intr_test_reg_t;
 
   typedef struct packed {
-    logic        q;
-    logic        qe;
+    struct packed {
+      logic        q;
+      logic        qe;
+    } recov_fault;
+    struct packed {
+      logic        q;
+      logic        qe;
+    } fatal_fault;
   } dma_reg2hw_alert_test_reg_t;
 
   typedef struct packed {
@@ -134,6 +142,12 @@ package dma_reg_pkg;
     } abort;
     struct packed {
       logic        q;
+    } aes_mode;
+    struct packed {
+      logic [1:0]  q;
+    } aes_op;
+    struct packed {
+      logic        q;
     } initial_transfer;
     struct packed {
       logic        q;
@@ -173,6 +187,14 @@ package dma_reg_pkg;
   typedef struct packed {
     struct packed {
       logic        q;
+      logic        qe;
+    } tag_failed;
+    struct packed {
+      logic        q;
+      logic        qe;
+    } tag_valid;
+    struct packed {
+      logic        q;
     } chunk_done;
     struct packed {
       logic        q;
@@ -209,6 +231,46 @@ package dma_reg_pkg;
   typedef struct packed {
     logic [31:0] q;
   } dma_reg2hw_intr_src_wr_val_mreg_t;
+
+  typedef struct packed {
+    struct packed {
+      logic [3:0]  q;
+    } aad_blocks;
+    struct packed {
+      logic [2:0]  q;
+    } prng_reseed_rate;
+    struct packed {
+      logic        q;
+    } sideload;
+    struct packed {
+      logic [2:0]  q;
+    } key_len;
+  } dma_reg2hw_aes_ctrl_reg_t;
+
+  typedef struct packed {
+    logic [31:0] q;
+  } dma_reg2hw_key_share0_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] q;
+  } dma_reg2hw_key_share1_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] q;
+  } dma_reg2hw_iv_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] q;
+  } dma_reg2hw_aad_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] q;
+  } dma_reg2hw_tag_in_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] q;
+    logic        re;
+  } dma_reg2hw_tag_out_mreg_t;
 
   typedef struct packed {
     struct packed {
@@ -268,6 +330,14 @@ package dma_reg_pkg;
     struct packed {
       logic        d;
       logic        de;
+    } tag_failed;
+    struct packed {
+      logic        d;
+      logic        de;
+    } tag_valid;
+    struct packed {
+      logic        d;
+      logic        de;
     } chunk_done;
     struct packed {
       logic        d;
@@ -292,6 +362,10 @@ package dma_reg_pkg;
   } dma_hw2reg_status_reg_t;
 
   typedef struct packed {
+    struct packed {
+      logic        d;
+      logic        de;
+    } aes_tag_error;
     struct packed {
       logic        d;
       logic        de;
@@ -331,47 +405,89 @@ package dma_reg_pkg;
     logic        de;
   } dma_hw2reg_sha2_digest_mreg_t;
 
+  typedef struct packed {
+    logic [31:0] d;
+    logic        de;
+  } dma_hw2reg_key_share0_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] d;
+    logic        de;
+  } dma_hw2reg_key_share1_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] d;
+    logic        de;
+  } dma_hw2reg_iv_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] d;
+    logic        de;
+  } dma_hw2reg_aad_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] d;
+    logic        de;
+  } dma_hw2reg_tag_in_mreg_t;
+
+  typedef struct packed {
+    logic [31:0] d;
+  } dma_hw2reg_tag_out_mreg_t;
+
   // Register -> HW type
   typedef struct packed {
-    dma_reg2hw_intr_state_reg_t intr_state; // [1044:1042]
-    dma_reg2hw_intr_enable_reg_t intr_enable; // [1041:1039]
-    dma_reg2hw_intr_test_reg_t intr_test; // [1038:1033]
-    dma_reg2hw_alert_test_reg_t alert_test; // [1032:1031]
-    dma_reg2hw_src_addr_lo_reg_t src_addr_lo; // [1030:999]
-    dma_reg2hw_src_addr_hi_reg_t src_addr_hi; // [998:967]
-    dma_reg2hw_dst_addr_lo_reg_t dst_addr_lo; // [966:935]
-    dma_reg2hw_dst_addr_hi_reg_t dst_addr_hi; // [934:903]
-    dma_reg2hw_addr_space_id_reg_t addr_space_id; // [902:895]
-    dma_reg2hw_enabled_memory_range_base_reg_t enabled_memory_range_base; // [894:862]
-    dma_reg2hw_enabled_memory_range_limit_reg_t enabled_memory_range_limit; // [861:829]
-    dma_reg2hw_range_valid_reg_t range_valid; // [828:828]
-    dma_reg2hw_range_regwen_reg_t range_regwen; // [827:824]
-    dma_reg2hw_total_data_size_reg_t total_data_size; // [823:792]
-    dma_reg2hw_chunk_data_size_reg_t chunk_data_size; // [791:760]
-    dma_reg2hw_transfer_width_reg_t transfer_width; // [759:758]
-    dma_reg2hw_control_reg_t control; // [757:748]
-    dma_reg2hw_src_config_reg_t src_config; // [747:746]
-    dma_reg2hw_dst_config_reg_t dst_config; // [745:744]
-    dma_reg2hw_status_reg_t status; // [743:737]
-    dma_reg2hw_handshake_intr_enable_reg_t handshake_intr_enable; // [736:726]
-    dma_reg2hw_clear_intr_src_reg_t clear_intr_src; // [725:715]
-    dma_reg2hw_clear_intr_bus_reg_t clear_intr_bus; // [714:704]
-    dma_reg2hw_intr_src_addr_mreg_t [10:0] intr_src_addr; // [703:352]
-    dma_reg2hw_intr_src_wr_val_mreg_t [10:0] intr_src_wr_val; // [351:0]
+    dma_reg2hw_intr_state_reg_t intr_state; // [2220:2218]
+    dma_reg2hw_intr_enable_reg_t intr_enable; // [2217:2215]
+    dma_reg2hw_intr_test_reg_t intr_test; // [2214:2209]
+    dma_reg2hw_alert_test_reg_t alert_test; // [2208:2205]
+    dma_reg2hw_src_addr_lo_reg_t src_addr_lo; // [2204:2173]
+    dma_reg2hw_src_addr_hi_reg_t src_addr_hi; // [2172:2141]
+    dma_reg2hw_dst_addr_lo_reg_t dst_addr_lo; // [2140:2109]
+    dma_reg2hw_dst_addr_hi_reg_t dst_addr_hi; // [2108:2077]
+    dma_reg2hw_addr_space_id_reg_t addr_space_id; // [2076:2069]
+    dma_reg2hw_enabled_memory_range_base_reg_t enabled_memory_range_base; // [2068:2036]
+    dma_reg2hw_enabled_memory_range_limit_reg_t enabled_memory_range_limit; // [2035:2003]
+    dma_reg2hw_range_valid_reg_t range_valid; // [2002:2002]
+    dma_reg2hw_range_regwen_reg_t range_regwen; // [2001:1998]
+    dma_reg2hw_total_data_size_reg_t total_data_size; // [1997:1966]
+    dma_reg2hw_chunk_data_size_reg_t chunk_data_size; // [1965:1934]
+    dma_reg2hw_transfer_width_reg_t transfer_width; // [1933:1932]
+    dma_reg2hw_control_reg_t control; // [1931:1919]
+    dma_reg2hw_src_config_reg_t src_config; // [1918:1917]
+    dma_reg2hw_dst_config_reg_t dst_config; // [1916:1915]
+    dma_reg2hw_status_reg_t status; // [1914:1904]
+    dma_reg2hw_handshake_intr_enable_reg_t handshake_intr_enable; // [1903:1893]
+    dma_reg2hw_clear_intr_src_reg_t clear_intr_src; // [1892:1882]
+    dma_reg2hw_clear_intr_bus_reg_t clear_intr_bus; // [1881:1871]
+    dma_reg2hw_intr_src_addr_mreg_t [10:0] intr_src_addr; // [1870:1519]
+    dma_reg2hw_intr_src_wr_val_mreg_t [10:0] intr_src_wr_val; // [1518:1167]
+    dma_reg2hw_aes_ctrl_reg_t aes_ctrl; // [1166:1156]
+    dma_reg2hw_key_share0_mreg_t [7:0] key_share0; // [1155:900]
+    dma_reg2hw_key_share1_mreg_t [7:0] key_share1; // [899:644]
+    dma_reg2hw_iv_mreg_t [3:0] iv; // [643:516]
+    dma_reg2hw_aad_mreg_t [7:0] aad; // [515:260]
+    dma_reg2hw_tag_in_mreg_t [3:0] tag_in; // [259:132]
+    dma_reg2hw_tag_out_mreg_t [3:0] tag_out; // [131:0]
   } dma_reg2hw_t;
 
   // HW -> register type
   typedef struct packed {
-    dma_hw2reg_intr_state_reg_t intr_state; // [703:698]
-    dma_hw2reg_src_addr_lo_reg_t src_addr_lo; // [697:665]
-    dma_hw2reg_src_addr_hi_reg_t src_addr_hi; // [664:632]
-    dma_hw2reg_dst_addr_lo_reg_t dst_addr_lo; // [631:599]
-    dma_hw2reg_dst_addr_hi_reg_t dst_addr_hi; // [598:566]
-    dma_hw2reg_cfg_regwen_reg_t cfg_regwen; // [565:562]
-    dma_hw2reg_control_reg_t control; // [561:556]
-    dma_hw2reg_status_reg_t status; // [555:544]
-    dma_hw2reg_error_code_reg_t error_code; // [543:528]
-    dma_hw2reg_sha2_digest_mreg_t [15:0] sha2_digest; // [527:0]
+    dma_hw2reg_intr_state_reg_t intr_state; // [1893:1888]
+    dma_hw2reg_src_addr_lo_reg_t src_addr_lo; // [1887:1855]
+    dma_hw2reg_src_addr_hi_reg_t src_addr_hi; // [1854:1822]
+    dma_hw2reg_dst_addr_lo_reg_t dst_addr_lo; // [1821:1789]
+    dma_hw2reg_dst_addr_hi_reg_t dst_addr_hi; // [1788:1756]
+    dma_hw2reg_cfg_regwen_reg_t cfg_regwen; // [1755:1752]
+    dma_hw2reg_control_reg_t control; // [1751:1746]
+    dma_hw2reg_status_reg_t status; // [1745:1730]
+    dma_hw2reg_error_code_reg_t error_code; // [1729:1712]
+    dma_hw2reg_sha2_digest_mreg_t [15:0] sha2_digest; // [1711:1184]
+    dma_hw2reg_key_share0_mreg_t [7:0] key_share0; // [1183:920]
+    dma_hw2reg_key_share1_mreg_t [7:0] key_share1; // [919:656]
+    dma_hw2reg_iv_mreg_t [3:0] iv; // [655:524]
+    dma_hw2reg_aad_mreg_t [7:0] aad; // [523:260]
+    dma_hw2reg_tag_in_mreg_t [3:0] tag_in; // [259:128]
+    dma_hw2reg_tag_out_mreg_t [3:0] tag_out; // [127:0]
   } dma_hw2reg_t;
 
   // Register offsets
@@ -438,16 +554,62 @@ package dma_reg_pkg;
   parameter logic [BlockAw-1:0] DMA_INTR_SRC_WR_VAL_8_OFFSET = 9'h 144;
   parameter logic [BlockAw-1:0] DMA_INTR_SRC_WR_VAL_9_OFFSET = 9'h 148;
   parameter logic [BlockAw-1:0] DMA_INTR_SRC_WR_VAL_10_OFFSET = 9'h 14c;
+  parameter logic [BlockAw-1:0] DMA_AES_CTRL_OFFSET = 9'h 150;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_0_OFFSET = 9'h 154;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_1_OFFSET = 9'h 158;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_2_OFFSET = 9'h 15c;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_3_OFFSET = 9'h 160;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_4_OFFSET = 9'h 164;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_5_OFFSET = 9'h 168;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_6_OFFSET = 9'h 16c;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE0_7_OFFSET = 9'h 170;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_0_OFFSET = 9'h 174;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_1_OFFSET = 9'h 178;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_2_OFFSET = 9'h 17c;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_3_OFFSET = 9'h 180;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_4_OFFSET = 9'h 184;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_5_OFFSET = 9'h 188;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_6_OFFSET = 9'h 18c;
+  parameter logic [BlockAw-1:0] DMA_KEY_SHARE1_7_OFFSET = 9'h 190;
+  parameter logic [BlockAw-1:0] DMA_IV_0_OFFSET = 9'h 194;
+  parameter logic [BlockAw-1:0] DMA_IV_1_OFFSET = 9'h 198;
+  parameter logic [BlockAw-1:0] DMA_IV_2_OFFSET = 9'h 19c;
+  parameter logic [BlockAw-1:0] DMA_IV_3_OFFSET = 9'h 1a0;
+  parameter logic [BlockAw-1:0] DMA_AAD_0_OFFSET = 9'h 1a4;
+  parameter logic [BlockAw-1:0] DMA_AAD_1_OFFSET = 9'h 1a8;
+  parameter logic [BlockAw-1:0] DMA_AAD_2_OFFSET = 9'h 1ac;
+  parameter logic [BlockAw-1:0] DMA_AAD_3_OFFSET = 9'h 1b0;
+  parameter logic [BlockAw-1:0] DMA_AAD_4_OFFSET = 9'h 1b4;
+  parameter logic [BlockAw-1:0] DMA_AAD_5_OFFSET = 9'h 1b8;
+  parameter logic [BlockAw-1:0] DMA_AAD_6_OFFSET = 9'h 1bc;
+  parameter logic [BlockAw-1:0] DMA_AAD_7_OFFSET = 9'h 1c0;
+  parameter logic [BlockAw-1:0] DMA_TAG_IN_0_OFFSET = 9'h 1c4;
+  parameter logic [BlockAw-1:0] DMA_TAG_IN_1_OFFSET = 9'h 1c8;
+  parameter logic [BlockAw-1:0] DMA_TAG_IN_2_OFFSET = 9'h 1cc;
+  parameter logic [BlockAw-1:0] DMA_TAG_IN_3_OFFSET = 9'h 1d0;
+  parameter logic [BlockAw-1:0] DMA_TAG_OUT_0_OFFSET = 9'h 1d4;
+  parameter logic [BlockAw-1:0] DMA_TAG_OUT_1_OFFSET = 9'h 1d8;
+  parameter logic [BlockAw-1:0] DMA_TAG_OUT_2_OFFSET = 9'h 1dc;
+  parameter logic [BlockAw-1:0] DMA_TAG_OUT_3_OFFSET = 9'h 1e0;
 
   // Reset values for hwext registers and their fields
   parameter logic [2:0] DMA_INTR_TEST_RESVAL = 3'h 0;
   parameter logic [0:0] DMA_INTR_TEST_DMA_DONE_RESVAL = 1'h 0;
   parameter logic [0:0] DMA_INTR_TEST_DMA_CHUNK_DONE_RESVAL = 1'h 0;
   parameter logic [0:0] DMA_INTR_TEST_DMA_ERROR_RESVAL = 1'h 0;
-  parameter logic [0:0] DMA_ALERT_TEST_RESVAL = 1'h 0;
+  parameter logic [1:0] DMA_ALERT_TEST_RESVAL = 2'h 0;
   parameter logic [0:0] DMA_ALERT_TEST_FATAL_FAULT_RESVAL = 1'h 0;
+  parameter logic [0:0] DMA_ALERT_TEST_RECOV_FAULT_RESVAL = 1'h 0;
   parameter logic [3:0] DMA_CFG_REGWEN_RESVAL = 4'h 6;
   parameter logic [3:0] DMA_CFG_REGWEN_REGWEN_RESVAL = 4'h 6;
+  parameter logic [31:0] DMA_TAG_OUT_0_RESVAL = 32'h 0;
+  parameter logic [31:0] DMA_TAG_OUT_0_TAG_0_RESVAL = 32'h 0;
+  parameter logic [31:0] DMA_TAG_OUT_1_RESVAL = 32'h 0;
+  parameter logic [31:0] DMA_TAG_OUT_1_TAG_1_RESVAL = 32'h 0;
+  parameter logic [31:0] DMA_TAG_OUT_2_RESVAL = 32'h 0;
+  parameter logic [31:0] DMA_TAG_OUT_2_TAG_2_RESVAL = 32'h 0;
+  parameter logic [31:0] DMA_TAG_OUT_3_RESVAL = 32'h 0;
+  parameter logic [31:0] DMA_TAG_OUT_3_TAG_3_RESVAL = 32'h 0;
 
   // Register index
   typedef enum int {
@@ -513,11 +675,48 @@ package dma_reg_pkg;
     DMA_INTR_SRC_WR_VAL_7,
     DMA_INTR_SRC_WR_VAL_8,
     DMA_INTR_SRC_WR_VAL_9,
-    DMA_INTR_SRC_WR_VAL_10
+    DMA_INTR_SRC_WR_VAL_10,
+    DMA_AES_CTRL,
+    DMA_KEY_SHARE0_0,
+    DMA_KEY_SHARE0_1,
+    DMA_KEY_SHARE0_2,
+    DMA_KEY_SHARE0_3,
+    DMA_KEY_SHARE0_4,
+    DMA_KEY_SHARE0_5,
+    DMA_KEY_SHARE0_6,
+    DMA_KEY_SHARE0_7,
+    DMA_KEY_SHARE1_0,
+    DMA_KEY_SHARE1_1,
+    DMA_KEY_SHARE1_2,
+    DMA_KEY_SHARE1_3,
+    DMA_KEY_SHARE1_4,
+    DMA_KEY_SHARE1_5,
+    DMA_KEY_SHARE1_6,
+    DMA_KEY_SHARE1_7,
+    DMA_IV_0,
+    DMA_IV_1,
+    DMA_IV_2,
+    DMA_IV_3,
+    DMA_AAD_0,
+    DMA_AAD_1,
+    DMA_AAD_2,
+    DMA_AAD_3,
+    DMA_AAD_4,
+    DMA_AAD_5,
+    DMA_AAD_6,
+    DMA_AAD_7,
+    DMA_TAG_IN_0,
+    DMA_TAG_IN_1,
+    DMA_TAG_IN_2,
+    DMA_TAG_IN_3,
+    DMA_TAG_OUT_0,
+    DMA_TAG_OUT_1,
+    DMA_TAG_OUT_2,
+    DMA_TAG_OUT_3
   } dma_id_e;
 
   // Register width information to check illegal writes
-  parameter logic [3:0] DMA_PERMIT [63] = '{
+  parameter logic [3:0] DMA_PERMIT [100] = '{
     4'b 0001, // index[ 0] DMA_INTR_STATE
     4'b 0001, // index[ 1] DMA_INTR_ENABLE
     4'b 0001, // index[ 2] DMA_INTR_TEST
@@ -539,7 +738,7 @@ package dma_reg_pkg;
     4'b 0001, // index[18] DMA_SRC_CONFIG
     4'b 0001, // index[19] DMA_DST_CONFIG
     4'b 0001, // index[20] DMA_STATUS
-    4'b 0001, // index[21] DMA_ERROR_CODE
+    4'b 0011, // index[21] DMA_ERROR_CODE
     4'b 1111, // index[22] DMA_SHA2_DIGEST_0
     4'b 1111, // index[23] DMA_SHA2_DIGEST_1
     4'b 1111, // index[24] DMA_SHA2_DIGEST_2
@@ -580,7 +779,44 @@ package dma_reg_pkg;
     4'b 1111, // index[59] DMA_INTR_SRC_WR_VAL_7
     4'b 1111, // index[60] DMA_INTR_SRC_WR_VAL_8
     4'b 1111, // index[61] DMA_INTR_SRC_WR_VAL_9
-    4'b 1111  // index[62] DMA_INTR_SRC_WR_VAL_10
+    4'b 1111, // index[62] DMA_INTR_SRC_WR_VAL_10
+    4'b 0011, // index[63] DMA_AES_CTRL
+    4'b 1111, // index[64] DMA_KEY_SHARE0_0
+    4'b 1111, // index[65] DMA_KEY_SHARE0_1
+    4'b 1111, // index[66] DMA_KEY_SHARE0_2
+    4'b 1111, // index[67] DMA_KEY_SHARE0_3
+    4'b 1111, // index[68] DMA_KEY_SHARE0_4
+    4'b 1111, // index[69] DMA_KEY_SHARE0_5
+    4'b 1111, // index[70] DMA_KEY_SHARE0_6
+    4'b 1111, // index[71] DMA_KEY_SHARE0_7
+    4'b 1111, // index[72] DMA_KEY_SHARE1_0
+    4'b 1111, // index[73] DMA_KEY_SHARE1_1
+    4'b 1111, // index[74] DMA_KEY_SHARE1_2
+    4'b 1111, // index[75] DMA_KEY_SHARE1_3
+    4'b 1111, // index[76] DMA_KEY_SHARE1_4
+    4'b 1111, // index[77] DMA_KEY_SHARE1_5
+    4'b 1111, // index[78] DMA_KEY_SHARE1_6
+    4'b 1111, // index[79] DMA_KEY_SHARE1_7
+    4'b 1111, // index[80] DMA_IV_0
+    4'b 1111, // index[81] DMA_IV_1
+    4'b 1111, // index[82] DMA_IV_2
+    4'b 1111, // index[83] DMA_IV_3
+    4'b 1111, // index[84] DMA_AAD_0
+    4'b 1111, // index[85] DMA_AAD_1
+    4'b 1111, // index[86] DMA_AAD_2
+    4'b 1111, // index[87] DMA_AAD_3
+    4'b 1111, // index[88] DMA_AAD_4
+    4'b 1111, // index[89] DMA_AAD_5
+    4'b 1111, // index[90] DMA_AAD_6
+    4'b 1111, // index[91] DMA_AAD_7
+    4'b 1111, // index[92] DMA_TAG_IN_0
+    4'b 1111, // index[93] DMA_TAG_IN_1
+    4'b 1111, // index[94] DMA_TAG_IN_2
+    4'b 1111, // index[95] DMA_TAG_IN_3
+    4'b 1111, // index[96] DMA_TAG_OUT_0
+    4'b 1111, // index[97] DMA_TAG_OUT_1
+    4'b 1111, // index[98] DMA_TAG_OUT_2
+    4'b 1111  // index[99] DMA_TAG_OUT_3
   };
 
 endpackage

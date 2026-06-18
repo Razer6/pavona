@@ -24,7 +24,23 @@ module dma
   // Per-class host port counts; size the boundary port vectors and let topgen size the
   // matching top-level nets. On override they are supplied in lock-step (checked below).
   parameter int unsigned                    NumTlul32                 = dma_pkg::NumTlul32Default,
-  parameter int unsigned                    NumTlul64                 = dma_pkg::NumTlul64Default
+  parameter int unsigned                    NumTlul64                 = dma_pkg::NumTlul64Default,
+  // Inline-AES build options. SecAesMasking=0 ties off the masking PRNG/EDN (non-production, faster
+  // DV); SecAllowForcingMasks=1 allows force_masks for DV.
+  parameter bit                             SecAesMasking             = 1'b1,
+  parameter bit                             SecAllowForcingMasks      = 1'b0,
+  // Secure netlist constants for the inline-AES clearing/masking PRNGs, threaded down into aes_core
+  // so the seeds/permutations are per-tapeout random, not fixed defaults. topgen drives them.
+  parameter aes_pkg::clearing_lfsr_seed_t   RndCnstClearingLfsrSeed   =
+      aes_pkg::RndCnstClearingLfsrSeedDefault,
+  parameter aes_pkg::clearing_lfsr_perm_t   RndCnstClearingLfsrPerm   =
+      aes_pkg::RndCnstClearingLfsrPermDefault,
+  parameter aes_pkg::clearing_lfsr_perm_t   RndCnstClearingSharePerm  =
+      aes_pkg::RndCnstClearingSharePermDefault,
+  parameter aes_pkg::masking_lfsr_seed_t    RndCnstMaskingLfsrSeed    =
+      aes_pkg::RndCnstMaskingLfsrSeedDefault,
+  parameter aes_pkg::masking_lfsr_perm_t    RndCnstMaskingLfsrPerm    =
+      aes_pkg::RndCnstMaskingLfsrPermDefault
 ) (
   input logic                                       clk_i,
   input logic                                       rst_ni,
@@ -49,7 +65,14 @@ module dma
   input   tlul_pkg::tl_d2h_t         [dma_pkg::dma_max1(NumTlul32)-1:0] host32_tl_h_i,
   // 64-bit TLUL host ports (off-bus, point-to-point)
   output  dma_tlul_pkg::dma_tl_h2d_t [dma_pkg::dma_max1(NumTlul64)-1:0] host64_h2d_o,
-  input   tlul_pkg::tl_d2h_t         [dma_pkg::dma_max1(NumTlul64)-1:0] host64_d2h_i
+  input   tlul_pkg::tl_d2h_t         [dma_pkg::dma_max1(NumTlul64)-1:0] host64_d2h_i,
+  // Inline AES: EDN entropy (separate clock domain), keymgr sideload key, LC escalation.
+  input  logic                                      clk_edn_i,
+  input  logic                                      rst_edn_ni,
+  output edn_pkg::edn_req_t                          edn_o,
+  input  edn_pkg::edn_rsp_t                          edn_i,
+  input  keymgr_pkg::hw_key_req_t                    keymgr_key_i,
+  input  lc_ctrl_pkg::lc_tx_t                        lc_escalate_en_i
 );
   import prim_mubi_pkg::*;
   import prim_sha2_pkg::*;
@@ -167,6 +190,7 @@ module dma
   logic [top_pkg::TL_DW-1:0]  burst_steered_data;
 
   logic dma_state_error;
+  logic aes_session_q;
   // SEC_CM: FSM.SPARSE
   dma_ctrl_state_e ctrl_state_q, ctrl_state_d;
   logic set_error_code, clear_go, clear_status, clear_sha_status, chunk_done;
@@ -228,6 +252,7 @@ module dma
   logic gated_clk_en, gated_clk;
   assign gated_clk_en = reg2hw.control.go.q       ||
                         (ctrl_state_q != DmaIdle) ||
+                        aes_session_q              ||
                         sw_reg_wr_extended         ||
                         // Keep the core clocked while any TL-UL transaction is still
                         // outstanding so that late responses (e.g. from an aborted/errored
@@ -262,23 +287,31 @@ module dma
     .intg_err_o( reg_intg_error )
   );
 
+  // Inline AES wrapper status/alert signals (driven by u_dma_aes below).
+  logic aes_alert_recov;
+  logic aes_alert_fatal;
+  logic aes_tag_mismatch_set;
+
   // Alerts
   logic [NumAlerts-1:0] alert_test, alerts;
-  assign alert_test = {reg2hw.alert_test.q & reg2hw.alert_test.qe};
-  assign alerts[0]  = reg_intg_error          ||
-                      dma_tlul_rsp_intg_err   ||
-                      dma_state_error         ||
-                      // Read-ahead FIFO over/underflow: cannot occur in normal operation (the
-                      // read-issue room gate and the abort/error drain prevent it), but is
-                      // escalated to a fatal alert as a defense-in-depth backstop.
-                      meta_fifo_err               ||
-                      data_fifo_err;
+  assign alert_test[AlertFatalFaultIdx] =
+      reg2hw.alert_test.fatal_fault.q & reg2hw.alert_test.fatal_fault.qe;
+  assign alert_test[AlertRecovFaultIdx] =
+      reg2hw.alert_test.recov_fault.q & reg2hw.alert_test.recov_fault.qe;
+
+  assign alerts[AlertFatalFaultIdx] = reg_intg_error       ||
+                                      dma_tlul_rsp_intg_err ||
+                                      dma_state_error       ||
+                                      meta_fifo_err         ||
+                                      data_fifo_err         ||
+                                      aes_alert_fatal;
+  assign alerts[AlertRecovFaultIdx] = aes_alert_recov | aes_tag_mismatch_set;
 
   for (genvar i = 0; i < NumAlerts; i++) begin : gen_alert_tx
     prim_alert_sender #(
       .AsyncOn(AlertAsyncOn[i]),
       .SkewCycles(AlertSkewCycles),
-      .IsFatal(1'b1)
+      .IsFatal(i == AlertFatalFaultIdx)
     ) u_prim_alert_sender (
       .clk_i,
       .rst_ni,
@@ -290,6 +323,194 @@ module dma
       .alert_tx_o   (alert_tx_o[i])
     );
   end
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Inline AES engine
+  //////////////////////////////////////////////////////////////////////////////
+  // The wrapper is instantiated and its inter-signals (EDN / keymgr / LC) are wired here. The
+  // block-streaming datapath is tied off for now; the dma.sv AES sub-FSM that feeds/drains it
+  // (gather -> wrapper -> scatter, tag handling) lands in the next change. The engine is therefore
+  // present but inactive (start_i never pulsed).
+  //
+  // Configuration decode: the wrapper samples these at start_i; the CSRs are regwen-locked while the
+  // DMA is busy. CONTROL.aes_op is the plain encoding {Off, Enc, Dec} (dma_aes_op_e).
+  aes_pkg::aes_mode_e aes_cfg_mode;
+  aes_pkg::ciph_op_e  aes_cfg_op;
+  aes_pkg::key_len_e  aes_cfg_key_len;
+  aes_pkg::prs_rate_e aes_cfg_reseed_rate;
+  logic               aes_cfg_sideload;
+
+  // Drive op/mode from the CAPTURED control state, not live reg2hw: CONTROL is not regwen-locked
+  // (it carries go/abort), so a mid-transfer write to aes_op/aes_mode could otherwise reach the
+  // wrapper's config commit and diverge from the FSM (which uses control_q). key_len/sideload/
+  // reseed live in AES_CTRL (regwen CFG_REGWEN, locked while busy) so reading them live is safe.
+  assign aes_cfg_op          = control_q.aes_decrypt ? aes_pkg::CIPH_INV : aes_pkg::CIPH_FWD;
+  assign aes_cfg_mode        = control_q.aes_gcm     ? aes_pkg::AES_GCM  : aes_pkg::AES_CTR;
+  assign aes_cfg_key_len     = aes_pkg::key_len_e'(reg2hw.aes_ctrl.key_len.q);
+  assign aes_cfg_reseed_rate = aes_pkg::prs_rate_e'(reg2hw.aes_ctrl.prng_reseed_rate.q);
+  assign aes_cfg_sideload    = reg2hw.aes_ctrl.sideload.q; // 1 = keymgr sideload key
+
+  // Pack the key-share and IV CSR arrays for the wrapper.
+  logic [7:0][31:0] aes_key_share0, aes_key_share1;
+  logic [3:0][31:0] aes_iv;
+  always_comb begin
+    for (int unsigned i = 0; i < 8; i++) begin
+      aes_key_share0[i] = reg2hw.key_share0[i].q;
+      aes_key_share1[i] = reg2hw.key_share1[i].q;
+    end
+    for (int unsigned i = 0; i < 4; i++) begin
+      aes_iv[i] = reg2hw.iv[i].q;
+    end
+  end
+
+  // ---- Block-serial AES datapath ----
+  // Each 16-byte AES block is gathered from 4 read beats and scattered as 4 write beats (the DMA
+  // datapath is 32-bit; AES enforces a 4-byte transfer width). Chunks contain full blocks.
+  logic [127:0] aes_gather_q, aes_gather_d;
+  logic         aes_gather_capture;
+  logic [127:0] aes_scatter_q, aes_scatter_d;
+  logic         aes_scatter_capture;
+  logic [1:0]   aes_word_cnt_q, aes_word_cnt_d;
+  logic         aes_word_cnt_en;
+  logic         aes_blk_consumed_q, aes_blk_consumed_d, aes_blk_consumed_en;
+  logic         aes_rd_inflight_q, aes_rd_inflight_d;
+  logic         aes_wr_inflight_q, aes_wr_inflight_d;
+  logic         aes_read_rsp_qual, aes_write_rsp_qual;
+
+  // Wrapper handshake / streaming / tag signals.
+  logic         aes_start, aes_clear;
+  // Keep configuration locked across software-paced chunks while the cipher retains its state.
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) aes_session_q <= 1'b0;
+    else if (aes_clear) aes_session_q <= 1'b0;
+    else if (aes_start) aes_session_q <= 1'b1;
+  end
+  logic         aes_blk_valid_in, aes_blk_ready_in;
+  logic [127:0] aes_blk_data_in;
+  logic [127:0] aes_blk_data_out;
+  logic         aes_blk_valid_out, aes_blk_ready_out;
+  logic [127:0] aes_tag_out;
+  logic         aes_tag_valid;
+  logic         aes_tag_valid_set;
+
+  // GCM AAD streaming + block counts.
+  logic         aes_decrypt;
+  logic [3:0]   aes_aad_blocks;
+  logic [12:0]  aes_text_blocks;
+  logic         aes_feeding_aad;
+  logic [1:0]   aes_aad_blk_cnt_q, aes_aad_blk_cnt_d;
+  logic         aes_aad_blk_cnt_en;
+  logic [127:0] aes_aad_block;
+
+  assign aes_decrypt     = control_q.aes_decrypt;
+  assign aes_aad_blocks  = reg2hw.aes_ctrl.aad_blocks.q;
+  // 16-byte text block count = total_data_size / 16 (a 16-byte-multiple total is enforced). v1
+  // supports up to 13 bits of blocks; the wrapper builds the GHASH length block from this.
+  assign aes_text_blocks = reg2hw.total_data_size.q[16:4];
+
+  // The DMA drains a produced block by latching it into the scatter buffer, so it presents
+  // blk_ready_i exactly when it captures.
+  assign aes_blk_ready_in = aes_scatter_capture;
+
+  // The gathered word lands in the current 32-bit slot; the rest of the block is preserved.
+  always_comb begin
+    aes_gather_d = aes_gather_q;
+    aes_gather_d[aes_word_cnt_q*32 +: 32] = dma_rsp_data;
+  end
+  assign aes_scatter_d = aes_blk_data_out;
+
+  // Current AAD block = 4 consecutive AAD words selected by the AAD block counter.
+  always_comb begin
+    aes_aad_block = '0;
+    for (int unsigned w = 0; w < 4; w++) begin
+      aes_aad_block[w*32 +: 32] = reg2hw.aad[{aes_aad_blk_cnt_q, w[1:0]}].q;
+    end
+  end
+  // Wrapper input: the AAD block while streaming AAD, otherwise the gathered text block.
+  assign aes_blk_data_in = aes_feeding_aad ? aes_aad_block : aes_gather_q;
+
+  // Expected tag (decrypt) and the glitch-resistant tag compare (SEC_CM: CTRL.CONSISTENCY). Two
+  // independent comparisons computed differently must agree to accept; the FSM accepts ONLY on
+  // aes_tag_ok and defaults to reject, so a single fault on either comparator cannot force accept.
+  logic [127:0] aes_tag_in;
+  always_comb begin
+    aes_tag_in = '0;
+    for (int unsigned i = 0; i < 4; i++) begin
+      aes_tag_in[i*32 +: 32] = reg2hw.tag_in[i].q;
+    end
+  end
+  logic aes_tag_eq;        // direct equality
+  logic aes_tag_ne;        // independent inequality (bitwise XOR reduction)
+  logic aes_tag_ok;        // accept only when equal AND not-unequal (redundant, fail-closed)
+  assign aes_tag_eq = (aes_tag_out == aes_tag_in);
+  assign aes_tag_ne = |(aes_tag_out ^ aes_tag_in);
+  assign aes_tag_ok = aes_tag_eq & ~aes_tag_ne;
+
+  prim_flop_en #(.Width(128)) u_aes_gather (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .en_i(aes_gather_capture),
+    .d_i(aes_gather_d), .q_o(aes_gather_q));
+  prim_flop_en #(.Width(128)) u_aes_scatter (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .en_i(aes_scatter_capture),
+    .d_i(aes_scatter_d), .q_o(aes_scatter_q));
+  prim_flop_en #(.Width(2)) u_aes_word_cnt (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .en_i(aes_word_cnt_en),
+    .d_i(aes_word_cnt_d), .q_o(aes_word_cnt_q));
+  prim_flop_en #(.Width(1)) u_aes_blk_consumed (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .en_i(aes_blk_consumed_en),
+    .d_i(aes_blk_consumed_d), .q_o(aes_blk_consumed_q));
+  prim_flop_en #(.Width(2)) u_aes_aad_blk_cnt (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .en_i(aes_aad_blk_cnt_en),
+    .d_i(aes_aad_blk_cnt_d), .q_o(aes_aad_blk_cnt_q));
+  prim_flop #(.Width(1)) u_aes_rd_inflight (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(aes_rd_inflight_d), .q_o(aes_rd_inflight_q));
+  prim_flop #(.Width(1)) u_aes_wr_inflight (
+    .clk_i(gated_clk), .rst_ni(rst_ni), .d_i(aes_wr_inflight_d), .q_o(aes_wr_inflight_q));
+
+  dma_aes #(
+    .SecMasking           (SecAesMasking),
+    .SecSBoxImpl          (aes_pkg::SBoxImplDom),
+    .SecAllowForcingMasks (SecAllowForcingMasks),
+    .AES192Enable         (1),
+    .EntropyWidth         (edn_pkg::ENDPOINT_BUS_WIDTH),
+    .RndCnstClearingLfsrSeed  (RndCnstClearingLfsrSeed),
+    .RndCnstClearingLfsrPerm  (RndCnstClearingLfsrPerm),
+    .RndCnstClearingSharePerm (RndCnstClearingSharePerm),
+    .RndCnstMaskingLfsrSeed   (RndCnstMaskingLfsrSeed),
+    .RndCnstMaskingLfsrPerm   (RndCnstMaskingLfsrPerm)
+  ) u_dma_aes (
+    .clk_i,
+    .rst_ni,
+    .clk_edn_i,
+    .rst_edn_ni,
+    .mode_i            (aes_cfg_mode),
+    .op_i              (aes_cfg_op),
+    .key_len_i         (aes_cfg_key_len),
+    .sideload_i        (aes_cfg_sideload),
+    .reseed_rate_i     (aes_cfg_reseed_rate),
+    .key_share0_i      (aes_key_share0),
+    .key_share1_i      (aes_key_share1),
+    .iv_i              (aes_iv),
+    .keymgr_key_i      (keymgr_key_i),
+    .blk_data_i        (aes_blk_data_in),
+    .blk_valid_i       (aes_blk_valid_in),
+    .blk_ready_o       (aes_blk_ready_out),
+    .blk_data_o        (aes_blk_data_out),
+    .blk_valid_o       (aes_blk_valid_out),
+    .blk_ready_i       (aes_blk_ready_in),
+    .gcm_phase_i       (aes_pkg::GCM_INIT),
+    .num_valid_bytes_i (5'd16),
+    .aad_blocks_i      ({9'd0, aes_aad_blocks}),
+    .text_blocks_i     (aes_text_blocks),
+    .tag_o             (aes_tag_out),
+    .tag_valid_o       (aes_tag_valid),
+    .start_i           (aes_start),
+    .clear_i           (aes_clear),
+    .edn_o             (edn_o),
+    .edn_i             (edn_i),
+    .alert_recov_o     (aes_alert_recov),
+    .alert_fatal_o     (aes_alert_fatal),
+    .lc_escalate_en_i  (lc_escalate_en_i)
+  );
 
   // Generic host-port datapath: instantiate the host adapter for each port's class,
   // routing it to the 32-bit or 64-bit boundary vector.
@@ -397,6 +618,12 @@ module dma
     control_d.range_valid                = reg2hw.range_valid.q;
     control_d.enabled_memory_range_base  = reg2hw.enabled_memory_range_base.q;
     control_d.enabled_memory_range_limit = reg2hw.enabled_memory_range_limit.q;
+    // Inline AES: aes_op {Off, Enc, Dec} (plain); the reserved value is caught as DmaOpcodeErr in
+    // DmaAddrSetup. Active when either Enc or Dec.
+    control_d.aes_en      = (dma_aes_op_e'(reg2hw.control.aes_op.q) == DmaAesOpEnc) ||
+                            (dma_aes_op_e'(reg2hw.control.aes_op.q) == DmaAesOpDec);
+    control_d.aes_decrypt = (dma_aes_op_e'(reg2hw.control.aes_op.q) == DmaAesOpDec);
+    control_d.aes_gcm     = reg2hw.control.aes_mode.q;
   end
 
   prim_flop_en #(
@@ -619,6 +846,12 @@ module dma
       rd_issue      = burst_rd_issue;
       rd_issue_addr = src_addr_d;
       rd_issue_be   = req_src_be_d;
+    end else if (ctrl_state_q == DmaAesGather) begin
+      rd_issue      = !aes_rd_inflight_q;
+      rd_issue_addr = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} +
+                      DMA_ADDR_WIDTH'(chunk_byte_q) +
+                      DMA_ADDR_WIDTH'(aes_word_cnt_q * 4);
+      rd_issue_be   = {top_pkg::TL_DBW{1'b1}};
     end else begin
       rd_issue      = do_read && (ctrl_state_q == DmaSendRead);
       rd_issue_addr = src_addr_q;
@@ -630,6 +863,12 @@ module dma
       wr_issue_addr = data_rdata.dst_addr;
       wr_issue_be   = data_rdata.dst_be;
       wr_issue_data = data_rdata.data;
+    end else if (ctrl_state_q == DmaAesScatter) begin
+      wr_issue      = !aes_wr_inflight_q;
+      wr_issue_addr = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} +
+                      DMA_ADDR_WIDTH'(chunk_byte_q);
+      wr_issue_be   = {top_pkg::TL_DBW{1'b1}};
+      wr_issue_data = aes_scatter_q[aes_word_cnt_q*32 +: 32];
     end else begin
       wr_issue      = do_write && (ctrl_state_q == DmaSendWrite);
       wr_issue_addr = dst_addr_q;
@@ -719,6 +958,11 @@ module dma
   assign write_rsp_valid = port_rvalid[dst_port_idx];
   assign write_rsp_error = port_err   [dst_port_idx];
 
+  assign aes_read_rsp_qual = read_rsp_valid &&
+                             (aes_rd_inflight_q || (rd_issue && read_gnt));
+  assign aes_write_rsp_qual = write_rsp_valid &&
+                              (aes_wr_inflight_q || (wr_issue && write_gnt));
+
   // Interrupt-clear response muxing: index by the resolved clear-target port.
   assign intr_clear_tlul_gnt       = port_gnt   [clr_port_idx];
   assign intr_clear_tlul_rsp_valid = port_rvalid[clr_port_idx];
@@ -777,6 +1021,24 @@ module dma
     sha2_digest_set      = 1'b0;
     sha2_consumed_d      = sha2_consumed_q;
 
+    // Inline AES sub-FSM strobe defaults.
+    aes_start            = 1'b0;
+    aes_clear            = 1'b0;
+    aes_blk_valid_in     = 1'b0;
+    aes_feeding_aad      = 1'b0;
+    aes_gather_capture   = 1'b0;
+    aes_scatter_capture  = 1'b0;
+    aes_word_cnt_d       = aes_word_cnt_q;
+    aes_word_cnt_en      = 1'b0;
+    aes_blk_consumed_d   = aes_blk_consumed_q;
+    aes_blk_consumed_en  = 1'b0;
+    aes_aad_blk_cnt_d    = aes_aad_blk_cnt_q;
+    aes_aad_blk_cnt_en   = 1'b0;
+    aes_tag_valid_set    = 1'b0;
+    aes_tag_mismatch_set = 1'b0;
+    aes_rd_inflight_d    = aes_rd_inflight_q;
+    aes_wr_inflight_d    = aes_wr_inflight_q;
+
     // Make `SHA2 Done` sticky to not miss a single-cycle done event during any outstanding writes
     if (ctrl_state_q == DmaIdle) begin
       sha2_hash_done_d = 1'b0;
@@ -794,6 +1056,17 @@ module dma
     if (cfg_abort_en) begin
       ctrl_state_d = DmaIdle;
       clear_go     = 1'b1;
+      // Flush the inline AES engine and all its block state on abort, so nothing replays into the
+      // next transfer.
+      aes_clear           = 1'b1;
+      aes_word_cnt_d      = 2'd0;
+      aes_word_cnt_en     = 1'b1;
+      aes_blk_consumed_d  = 1'b0;
+      aes_blk_consumed_en = 1'b1;
+      aes_aad_blk_cnt_d   = 2'd0;
+      aes_aad_blk_cnt_en  = 1'b1;
+      aes_rd_inflight_d   = 1'b0;
+      aes_wr_inflight_d   = 1'b0;
     end else begin
       unique case (ctrl_state_q)
         DmaIdle: begin
@@ -803,7 +1076,7 @@ module dma
           // In DmaIdle we need to determine if we are really idling or we are doing a roundtrip
           // via idle. If we are really idling, we need to take the config from the register
           // interface; otherwise we need to take the captured data.
-          if (!reg2hw.status.busy.q) begin
+          if (!reg2hw.status.busy.q && !aes_session_q) begin
             // We are idling
             cfg_handshake_en = reg2hw.control.hardware_handshake_enable.q;
           end
@@ -812,7 +1085,8 @@ module dma
           // Wait for `go` bit to be set to proceed with data movement
           if (reg2hw.control.go.q || reg2hw.status.busy.q) begin
             // Clear the transferred bytes only on the very first iteration
-            if (reg2hw.control.initial_transfer.q && !reg2hw.status.busy.q) begin
+            if (reg2hw.control.initial_transfer.q && !reg2hw.status.busy.q &&
+                !aes_session_q) begin
               transfer_byte_d       = '0;
               capture_transfer_byte = 1'b1;
               // Capture unlocked state when starting the transfer.
@@ -830,6 +1104,11 @@ module dma
               end else begin
                 ctrl_state_d = DmaCfgValidate;
               end
+            end
+            // A suspended message must be resumed, or explicitly aborted before replacement.
+            if (aes_session_q && reg2hw.control.initial_transfer.q) begin
+              next_error[DmaOpcodeErr] = 1'b1;
+              ctrl_state_d = DmaError;
             end
           end
         end
@@ -1004,33 +1283,82 @@ module dma
             next_error[DmaRangeValidErr] = 1'b1;
           end
 
+          // Reserved aes_op codepoint is an invalid opcode.
+          if (!aes_session_q && reg2hw.control.aes_op.q == 2'd3) begin
+            next_error[DmaOpcodeErr] = 1'b1;
+          end
+
+          // Inline AES legal-combination checks: full 16-byte blocks in every chunk.
+          // AES needs a read+write stream, no inline hashing, 4-byte beats, 16-byte-multiple
+          // sizes, incrementing non-wrapping addresses, and no hardware handshake.
+          if (control_q.aes_en) begin
+            if (!do_read || !do_write || (digest_sel != DigestNone) ||
+                control_q.cfg_handshake_en) begin
+              next_error[DmaOpcodeErr] = 1'b1;
+            end
+            if (reg2hw.transfer_width.q != DmaXfer4BperTxn) begin
+              next_error[DmaSizeErr] = 1'b1;
+            end
+            if (|reg2hw.total_data_size.q[3:0] || |reg2hw.chunk_data_size.q[3:0]) begin
+              next_error[DmaSizeErr] = 1'b1;
+            end
+            if ((reg2hw.src_config.increment.q == AddrNoIncrement) ||
+                (reg2hw.dst_config.increment.q == AddrNoIncrement) ||
+                (reg2hw.src_config.wrap.q == AddrWrapChunk) ||
+                (reg2hw.dst_config.wrap.q == AddrWrapChunk)) begin
+              next_error[DmaSizeErr] = 1'b1;
+            end
+            if (aes_aad_blocks > 4'd2) begin // only NumAadWords/4 = 2 AAD blocks are provided
+              next_error[DmaSizeErr] = 1'b1;
+            end
+            // GCM length/phase tracking carries the 16-byte text-block count in a 13-bit field
+            // (`aes_text_blocks` = total_data_size[16:4]). A larger GCM transfer would truncate the
+            // block count, diverging the wrapper's GHASH length block / phase counter from the
+            // gather/scatter FSM, so reject anything above 8191 blocks (0x1_FFF0 bytes). CTR has no
+            // such field (the FSM tracks bytes directly), so it is left unconstrained here.
+            if (control_q.aes_gcm && |reg2hw.total_data_size.q[31:17]) begin
+              next_error[DmaSizeErr] = 1'b1;
+            end
+            if (aes_cfg_sideload && !keymgr_key_i.valid) begin // never run with a default key
+              next_error[DmaOpcodeErr] = 1'b1;
+            end
+          end
+
           // Decide whether the read-ahead burst datapath can be used: plain copy, no inline
           // hashing, no hardware handshake, a single chunk (chunk >= total), and both ends on
           // TL-UL ports (OT internal / SoC control). Otherwise use the serial datapath.
-          fast_mode_d = do_read && do_write && !use_inline_hashing &&
+          fast_mode_d = do_read && do_write && !use_inline_hashing && !control_q.aes_en &&
                         !control_q.cfg_handshake_en &&
                         (reg2hw.chunk_data_size.q >= reg2hw.total_data_size.q) &&
                         src_asid_valid && dst_asid_valid;
           capture_fast_mode = 1'b1;
 
-          // If one or more errors occurred, do not start the transfer.
           if (|next_error) begin
             ctrl_state_d = DmaError;
           end else if (!dma_drained) begin
-            // SEC: do not issue any bus transaction until responses from a prior aborted or
-            // errored transfer have fully drained, so they cannot be consumed by - and leak
-            // into - this transfer. Wait here (no bus activity in DmaCfgValidate).
+            // Do not start until responses from a prior transfer have drained.
             ctrl_state_d = DmaCfgValidate;
+          end else if (control_q.aes_en) begin
+            if (transfer_byte_q == '0) aes_start = 1'b1;
+            capture_transfer_width = 1'b1;
+            aes_word_cnt_d  = 2'd0;
+            aes_word_cnt_en = 1'b1;
+            aes_rd_inflight_d = 1'b0;
+            aes_wr_inflight_d = 1'b0;
+            if (control_q.aes_gcm && (transfer_byte_q == '0) &&
+                (aes_aad_blocks != 4'd0)) begin
+              aes_aad_blk_cnt_d  = 2'd0;
+              aes_aad_blk_cnt_en = 1'b1;
+              ctrl_state_d       = DmaAesGhashAad;
+            end else begin
+              ctrl_state_d = DmaAesGather;
+            end
           end else if (fast_mode_d) begin
-            // Initialise the burst datapath: read position at the start, no outstanding reqs.
             rd_byte_d        = transfer_byte_q;
             capture_rd_byte  = 1'b1;
             rd_outstanding_d = '0;
             wr_outstanding_d = '0;
-            // Cross-port (source and destination on different physical ports): overlap reads
-            // and writes concurrently (DmaRunPipe). Same-port: alternate read/write bursts to
-            // keep responses unambiguous on the shared d-channel (DmaReadBurst).
-            ctrl_state_d     = (src_port_idx != dst_port_idx) ? DmaRunPipe : DmaReadBurst;
+            ctrl_state_d = (src_port_idx != dst_port_idx) ? DmaRunPipe : DmaReadBurst;
           end else begin
             // Start the inline hashing on the very first transfer (transfer_byte_q still 0).
             if ((transfer_byte_q == '0) && use_inline_hashing) begin
@@ -1357,8 +1685,154 @@ module dma
           end
         end
 
+        // Inline AES-GCM: stream the AAD block(s) from the AAD CSRs into GHASH before the text.
+        // Hold the current block valid until the wrapper accepts it, then advance; after the last
+        // block, begin gathering the first text block.
+        DmaAesGhashAad: begin
+          aes_feeding_aad  = 1'b1;
+          aes_blk_valid_in = 1'b1;
+          if (aes_blk_ready_out) begin
+            // Full-width terminate compare (zero-extend the 2-bit counter) so the feed count and the
+            // wrapper's GHASH length block (built from the full aad_blocks) cannot diverge. The
+            // <=2-block cap is enforced in DmaAddrSetup against NumAadWords.
+            if ({2'b00, aes_aad_blk_cnt_q} == (aes_aad_blocks - 4'd1)) begin
+              aes_aad_blk_cnt_d  = 2'd0;
+              aes_aad_blk_cnt_en = 1'b1;
+              aes_word_cnt_d     = 2'd0;
+              aes_word_cnt_en    = 1'b1;
+              ctrl_state_d       = DmaAesGather;
+            end else begin
+              aes_aad_blk_cnt_d  = aes_aad_blk_cnt_q + 2'd1;
+              aes_aad_blk_cnt_en = 1'b1;
+            end
+          end
+        end
+
+        // Inline AES: gather a 16-byte block from 4 read beats (one outstanding read at a time),
+        // advancing the source address by 4 each beat; present the block to the engine on word 3.
+        DmaAesGather: begin
+          aes_rd_inflight_d = (aes_rd_inflight_q | (rd_issue && read_gnt)) &
+                              ~aes_read_rsp_qual;
+          if (aes_read_rsp_qual) begin
+            if (read_rsp_error) begin
+              next_error[DmaBusErr] = 1'b1;
+              ctrl_state_d          = DmaError;
+            end else begin
+              aes_gather_capture = 1'b1;
+              if (aes_word_cnt_q != 2'd3) begin
+                aes_word_cnt_d  = aes_word_cnt_q + 2'd1;
+                aes_word_cnt_en = 1'b1;
+              end else begin
+                aes_word_cnt_d      = 2'd0;
+                aes_word_cnt_en     = 1'b1;
+                aes_blk_consumed_d  = 1'b0;
+                aes_blk_consumed_en = 1'b1;
+                ctrl_state_d        = DmaAesProcess;
+              end
+            end
+          end
+        end
+
+        // Inline AES: present the gathered block until the engine accepts it, then wait for the
+        // produced block and latch it into the scatter buffer.
+        DmaAesProcess: begin
+          aes_blk_valid_in = !aes_blk_consumed_q;
+          if (aes_blk_valid_in && aes_blk_ready_out) begin
+            aes_blk_consumed_d  = 1'b1;
+            aes_blk_consumed_en = 1'b1;
+          end
+          if (aes_blk_valid_out) begin
+            aes_scatter_capture = 1'b1;
+            aes_word_cnt_d      = 2'd0;
+            aes_word_cnt_en     = 1'b1;
+            ctrl_state_d        = DmaAesScatter;
+          end
+        end
+
+        // Inline AES: scatter the produced block as 4 write beats (one outstanding write at a time),
+        // advancing the destination address and byte counters by 4 each beat. After the last beat,
+        // either gather the next block, finalize the tag (GCM), or complete (CTR).
+        DmaAesScatter: begin
+          aes_wr_inflight_d = (aes_wr_inflight_q | (wr_issue && write_gnt)) &
+                              ~aes_write_rsp_qual;
+          if (aes_write_rsp_qual) begin
+            if (write_rsp_error) begin
+              next_error[DmaBusErr] = 1'b1;
+              ctrl_state_d          = DmaError;
+            end else begin
+              transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(4);
+              chunk_byte_d          = chunk_byte_q + TRANSFER_BYTES_WIDTH'(4);
+              capture_transfer_byte = 1'b1;
+              capture_chunk_byte    = 1'b1;
+              if (aes_word_cnt_q != 2'd3) begin
+                aes_word_cnt_d  = aes_word_cnt_q + 2'd1;
+                aes_word_cnt_en = 1'b1;
+              end else begin
+                aes_word_cnt_d  = 2'd0;
+                aes_word_cnt_en = 1'b1;
+                if (transfer_byte_d >= reg2hw.total_data_size.q) begin
+                  if (control_q.aes_gcm) begin
+                    // GCM: the engine still finalizes GHASH and produces the tag.
+                    ctrl_state_d = DmaAesTag;
+                  end else begin
+                    // CTR: flush the engine and complete.
+                    aes_clear    = 1'b1;
+                    clear_go     = 1'b1;
+                    ctrl_state_d = DmaIdle;
+                  end
+                end else if (chunk_byte_d >= reg2hw.chunk_data_size.q) begin
+                  // Retain CTR/GHASH and configuration until software resumes this message.
+                  clear_go = 1'b1;
+                  chunk_done = 1'b1;
+                  ctrl_state_d = DmaIdle;
+                end else begin
+                  // Next block within this chunk.
+                  ctrl_state_d = DmaAesGather;
+                end
+              end
+            end
+          end
+        end
+
+        // Inline AES-GCM: wait for the tag. Encrypt publishes it (TAG_OUT + tag_valid); decrypt
+        // accepts ONLY on the hardened compare (aes_tag_ok), else raises tag_failed + DmaAesTagErr
+        // and suppresses `done`.
+        //
+        // DECRYPT QUARANTINE CONTRACT (release-of-unverified-plaintext): streaming AEAD decrypt
+        // cannot defer the destination writes until the tag is known (a transfer may exceed any
+        // feasible on-chip buffer), so the decrypted plaintext is already written to the destination
+        // before the tag is checked. On mismatch `done` is never set (we go to DmaError; enforced by
+        // AesTagFailNoDone_A / AesTagFailNoDoneStatus_A, so the done interrupt cannot fire) and
+        // STATUS.tag_failed is raised. SW MUST therefore gate every consumer of the destination on
+        // STATUS.tag_valid and wipe the buffer on tag_failed.
+        //
+        // TAPEOUT DECISION: this SW-quarantine contract is the accepted v1 behaviour. A hardware
+        // destination-zeroize on tag error remains a tracked hardening item; it is NOT required
+        // for v1 because (a) done/interrupt suppression is hardware-enforced above and (b) the
+        // architectural contract requires consumers to wait for tag_valid before reading.
+        DmaAesTag: begin
+          if (aes_tag_valid) begin
+            if (!aes_decrypt) begin
+              aes_tag_valid_set = 1'b1;
+              aes_clear         = 1'b1;
+              clear_go          = 1'b1;
+              ctrl_state_d      = DmaIdle;
+            end else if (aes_tag_ok) begin
+              aes_tag_valid_set = 1'b1;
+              aes_clear         = 1'b1;
+              clear_go          = 1'b1;
+              ctrl_state_d      = DmaIdle;
+            end else begin
+              aes_tag_mismatch_set     = 1'b1;
+              next_error[DmaAesTagErr] = 1'b1;
+              ctrl_state_d             = DmaError;
+            end
+          end
+        end
+
         // Wait here until the error is cleared
         DmaError: begin
+          if (control_q.aes_en) aes_clear = 1'b1;
           if (!reg2hw.status.error.q) begin
             ctrl_state_d = DmaIdle;
             clear_go     = 1'b1;
@@ -1642,7 +2116,9 @@ module dma
                            (ctrl_state_q == DmaWriteBurst)        ||
                            (ctrl_state_q == DmaRunPipe)           ||
                            (ctrl_state_q == DmaShaWait)           ||
-                           (ctrl_state_q == DmaShaFinalize);
+                           (ctrl_state_q == DmaShaFinalize)       ||
+                           (ctrl_state_q == DmaAesScatter)        ||
+                           (ctrl_state_q == DmaAesTag);
 
 
 
@@ -1672,7 +2148,8 @@ module dma
 
     // Unlock the register set when not busy. IDLE is not the right indicator,
     // since multi-chunked transfers roundtrip via IDLE.
-    hw2reg.cfg_regwen.d = prim_mubi_pkg::mubi4_bool_to_mubi(~reg2hw.status.busy.q);
+    hw2reg.cfg_regwen.d = prim_mubi_pkg::mubi4_bool_to_mubi(
+        !(reg2hw.status.busy.q || aes_session_q));
 
     // When we would update the register, we would update it with the current transferred number of
     // bytes of the current chunk
@@ -1733,7 +2210,10 @@ module dma
     hw2reg.status.busy.d  = ((ctrl_state_q == DmaIdle) && (ctrl_state_d != DmaIdle)) ? 1'b1 : 1'b0;
 
     // Status is cleared when leaving the IDLE state the first time, i.e., when busy is not yet set
-    clear_status = (ctrl_state_q == DmaIdle) && (ctrl_state_d != DmaIdle) && !reg2hw.status.busy.q;
+    // A rejected attempt to replace a suspended AES session enters Error directly from Idle;
+    // its error and error code must take priority over the start-of-chunk status clear.
+    clear_status = (ctrl_state_q == DmaIdle) && (ctrl_state_d != DmaIdle) &&
+                   (ctrl_state_d != DmaError) && !reg2hw.status.busy.q;
     // The SHA digest valid and the digest itself needs to incorporate the initial transfer flag as
     // busy is deasserted for every chunk in the middle of a multi-chunk memory-to-memory transfer
     clear_sha_status = (ctrl_state_q == DmaIdle) && (ctrl_state_d != DmaIdle) &&
@@ -1855,6 +2335,50 @@ module dma
   end
 
   //////////////////////////////////////////////////////////////////////////////
+  // Inline AES register interface
+  //////////////////////////////////////////////////////////////////////////////
+  // Drive the AES result registers from the sub-FSM. KEY_SHARE/IV/AAD/TAG_IN are reggen-stored and
+  // captured by the wrapper at start; they are HW-wiped (SEC_CM KEY.SEC_WIPE / IV.CONFIG.SEC_WIPE)
+  // when the operation ends, aborts, or errors, so no key/IV/tag residue is left in the CSR storage.
+  // (v1 zeroizes; a pseudo-random wipe value is the production enhancement.)
+  logic aes_err_clr;
+  logic aes_wipe;
+  assign aes_err_clr = reg2hw.status.error.qe & reg2hw.status.error.q;
+  assign aes_wipe    = aes_clear || cfg_abort_en || (ctrl_state_q == DmaError);
+  always_comb begin
+    // tag_valid / tag_failed: set by the tag state, cleared at the start of a new transfer.
+    hw2reg.status.tag_valid.de  = aes_tag_valid_set | clear_status;
+    hw2reg.status.tag_valid.d   = clear_status ? 1'b0 : 1'b1;
+    hw2reg.status.tag_failed.de = aes_tag_mismatch_set | clear_status;
+    hw2reg.status.tag_failed.d  = clear_status ? 1'b0 : 1'b1;
+
+    // Decrypt tag mismatch surfaced as a DMA error (cleared on start or the RW1C error clear).
+    hw2reg.error_code.aes_tag_error.de = set_error_code | clear_status | aes_err_clr;
+    hw2reg.error_code.aes_tag_error.d  = (clear_status | aes_err_clr) ? 1'b0
+                                                                      : next_error[DmaAesTagErr];
+
+    for (int unsigned i = 0; i < 8; i++) begin
+      hw2reg.key_share0[i].de = aes_wipe;
+      hw2reg.key_share0[i].d  = '0;
+      hw2reg.key_share1[i].de = aes_wipe;
+      hw2reg.key_share1[i].d  = '0;
+    end
+    for (int unsigned i = 0; i < NumAadWords; i++) begin
+      hw2reg.aad[i].de = aes_wipe;
+      hw2reg.aad[i].d  = '0;
+    end
+    for (int unsigned i = 0; i < 4; i++) begin
+      hw2reg.iv[i].de     = aes_wipe;
+      hw2reg.iv[i].d      = '0;
+      hw2reg.tag_in[i].de = aes_wipe;
+      hw2reg.tag_in[i].d  = '0;
+      // TAG_OUT is hwext: HW continuously presents the wrapper-held computed tag (SW reads it gated
+      // by STATUS.tag_valid).
+      hw2reg.tag_out[i].d = aes_tag_out[i*32 +: 32];
+    end
+  end
+
+  //////////////////////////////////////////////////////////////////////////////
   // Unused signals
   //////////////////////////////////////////////////////////////////////////////
   logic unused_signals;
@@ -1868,6 +2392,10 @@ module dma
                             data_wready,
                             rd_issue_addr[1:0],
                             wr_issue_addr[1:0]};
+
+  // TAG_OUT is HW-driven (hwext); its reg2hw read-back path is unused by the DMA.
+  logic unused_aes_signals;
+  assign unused_aes_signals = ^{reg2hw.tag_out};
 
   //////////////////////////////////////////////////////////////////////////////
   // Assertions
@@ -1924,6 +2452,83 @@ module dma
 
   // Alert assertion for sparse FSM.
   `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(CtrlStateFsmCheck_A, aff_ctrl_state_q, alert_tx_o[0])
+
+  // Inline AES sub-FSM SEC_CM assertions (mirrors aes.sv assertions for the aes_core FSMs).
+  // The fatal alert index is AlertFatalFaultIdx = 0.
+  `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(DmaAesFsmCheck_A,
+      u_dma_aes.u_state_regs, alert_tx_o[AlertFatalFaultIdx])
+
+  for (genvar i = 0; i < aes_pkg::Sp2VWidth; i++) begin : gen_aes_ctrl_fsm_sva
+    if (aes_pkg::SP2V_LOGIC_HIGH[i] == 1'b1) begin : gen_p
+      `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesControlFsmCheck_A,
+          u_dma_aes.u_aes_core.u_aes_control.gen_fsm[i].gen_fsm_p.
+              u_aes_control_fsm_i.u_aes_control_fsm.u_state_regs,
+          alert_tx_o[AlertFatalFaultIdx])
+      `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesCtrFsmCheck_A,
+          u_dma_aes.u_aes_core.u_aes_ctr.gen_fsm[i].gen_fsm_p.
+              u_aes_ctr_fsm_i.u_aes_ctr_fsm.u_state_regs,
+          alert_tx_o[AlertFatalFaultIdx])
+      `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesCipherControlFsmCheck_A,
+          u_dma_aes.u_aes_core.u_aes_cipher_core.u_aes_cipher_control.gen_fsm[i].gen_fsm_p.
+              u_aes_cipher_control_fsm_i.u_aes_cipher_control_fsm.u_state_regs,
+          alert_tx_o[AlertFatalFaultIdx])
+    end else begin : gen_n
+      `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesControlFsmCheck_A,
+          u_dma_aes.u_aes_core.u_aes_control.gen_fsm[i].gen_fsm_n.
+              u_aes_control_fsm_i.u_aes_control_fsm.u_state_regs,
+          alert_tx_o[AlertFatalFaultIdx])
+      `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesCtrFsmCheck_A,
+          u_dma_aes.u_aes_core.u_aes_ctr.gen_fsm[i].gen_fsm_n.
+              u_aes_ctr_fsm_i.u_aes_ctr_fsm.u_state_regs,
+          alert_tx_o[AlertFatalFaultIdx])
+      `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesCipherControlFsmCheck_A,
+          u_dma_aes.u_aes_core.u_aes_cipher_core.u_aes_cipher_control.gen_fsm[i].gen_fsm_n.
+              u_aes_cipher_control_fsm_i.u_aes_cipher_control_fsm.u_state_regs,
+          alert_tx_o[AlertFatalFaultIdx])
+    end
+  end
+
+  `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesGhashFsmCheck_A,
+      u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.u_state_regs,
+      alert_tx_o[AlertFatalFaultIdx])
+
+  // Inline AES onehot-check SEC_CM assertions (GHASH masked-add muxes and gf_mult1 mux).
+  for (genvar s = 0; s < 2; s++) begin : gen_ghash_onehot_add_in_sva
+    `ASSERT_PRIM_ONEHOT_ERROR_TRIGGER_ALERT(GhashAadOnehotCheck_A,
+        u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.gen_masked_add.gen_add_in_muxes[s].
+            u_prim_onehot_check_add_in_sel,
+        alert_tx_o[AlertFatalFaultIdx])
+  end
+  `ASSERT_PRIM_ONEHOT_ERROR_TRIGGER_ALERT(GhashMultOnehotCheck_A,
+      u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.gen_gf_mult1_mux.
+          u_prim_onehot_check_gf_mult1_in_sel,
+      alert_tx_o[AlertFatalFaultIdx])
+
+  // Inline AES decrypt tag-compare invariants (SEC_CM CTRL.CONSISTENCY): the tag is only accepted
+  // when the redundant compare agrees, and a mismatch never lets the transfer complete.
+  `ASSERT(AesDecryptTagAccept_A,
+          (ctrl_state_q == DmaAesTag) && aes_decrypt && aes_tag_valid_set |-> aes_tag_ok)
+  `ASSERT(AesDecryptTagReject_A,
+          (ctrl_state_q == DmaAesTag) && aes_decrypt && aes_tag_mismatch_set |-> !aes_tag_ok)
+  // A decrypt tag mismatch must move to the error state, never signal done.
+  `ASSERT(AesTagFailNoDone_A,
+          aes_tag_mismatch_set |-> (ctrl_state_d == DmaError))
+  `ASSERT(AesSessionLocksConfig_A,
+          aes_session_q |-> hw2reg.cfg_regwen.d == prim_mubi_pkg::MuBi4False)
+  `ASSERT(AesChunkPreservesSession_A,
+          control_q.aes_en && chunk_done |-> !aes_clear && !aes_tag_valid_set &&
+          (chunk_byte_d[3:0] == 0) && (transfer_byte_d < reg2hw.total_data_size.q))
+  `ASSERT(AesResumeDoesNotRestart_A, aes_session_q |-> !aes_start)
+  `ASSERT(AesPauseNoTraffic_A,
+          aes_session_q && (ctrl_state_q == DmaIdle) |-> !rd_issue && !wr_issue)
+  // Quarantine guarantee (release-of-unverified-plaintext, see DmaAesTag): on a decrypt tag
+  // mismatch the DMA must never write a 1 into STATUS.done, so the done interrupt (which fires off
+  // STATUS.done.q) cannot assert and SW has no "transfer complete" signal that could be mistaken
+  // for "destination authenticated". The plaintext is still in the destination; SW MUST treat it
+  // as poisoned until STATUS.tag_valid. This makes done-suppression an explicit, checkable
+  // invariant rather than an emergent property of the clear_go path.
+  `ASSERT(AesTagFailNoDoneStatus_A,
+          aes_tag_mismatch_set |-> !(hw2reg.status.done.de && hw2reg.status.done.d))
 
   // Boundary-class count parameters must stay consistent with the `PortDesc` array.
   `ASSERT_INIT(NumTlul32Consistent_A, NumTlul32 == dma_count_class_local(dma_pkg::PortTlul32))
