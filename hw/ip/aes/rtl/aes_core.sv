@@ -52,6 +52,9 @@ module aes_core
   output logic                        alert_recov_o,
   output logic                        alert_fatal_o,
 
+  // GCM initialization done (H = E(0) and S = E(J0) ready); used to sequence the GCM phases.
+  output logic                        gcm_init_done_o,
+
   // Bus Interface
   input  aes_reg2hw_t                 reg2hw,
   output aes_hw2reg_t                 hw2reg
@@ -813,6 +816,9 @@ module aes_core
     .input_ready_o             ( hw2reg.status.input_ready.d            ),
     .input_ready_we_o          ( hw2reg.status.input_ready.de           )
   );
+
+  // Surface GCM initialization-done for GCM phase sequencing.
+  assign gcm_init_done_o = gcm_init_done;
 
   // SEC_CM: DATA_REG.SEC_WIPE
   // Input data register clear
