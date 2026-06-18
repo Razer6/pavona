@@ -21,3 +21,4 @@
 `include "dma_config_lock_vseq.sv"
 `include "dma_mem_enabled_vseq.sv"
 `include "dma_hashing_partial_vseq.sv"
+`include "dma_overlap_vseq.sv"
