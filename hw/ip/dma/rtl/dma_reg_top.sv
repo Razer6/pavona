@@ -189,8 +189,12 @@ module dma_reg_top
   logic [1:0] transfer_width_qs;
   logic [1:0] transfer_width_wd;
   logic control_we;
-  logic [3:0] control_opcode_qs;
-  logic [3:0] control_opcode_wd;
+  logic control_read_en_qs;
+  logic control_read_en_wd;
+  logic control_write_en_qs;
+  logic control_write_en_wd;
+  logic [1:0] control_digest_qs;
+  logic [1:0] control_digest_wd;
   logic control_hardware_handshake_enable_qs;
   logic control_hardware_handshake_enable_wd;
   logic control_digest_swap_qs;
@@ -1052,7 +1056,7 @@ module dma_reg_top
 
   // R[control]: V(False)
   logic control_qe;
-  logic [5:0] control_flds_we;
+  logic [7:0] control_flds_we;
   prim_flop #(
     .Width(1),
     .ResetValue(0)
@@ -1062,19 +1066,19 @@ module dma_reg_top
     .d_i(&control_flds_we),
     .q_o(control_qe)
   );
-  //   F[opcode]: 3:0
+  //   F[read_en]: 0:0
   prim_subreg #(
-    .DW      (4),
+    .DW      (1),
     .SwAccess(prim_subreg_pkg::SwAccessRW),
-    .RESVAL  (4'h0),
+    .RESVAL  (1'h1),
     .Mubi    (1'b0)
-  ) u_control_opcode (
+  ) u_control_read_en (
     .clk_i   (clk_i),
     .rst_ni  (rst_ni),
 
     // from register interface
     .we     (control_we),
-    .wd     (control_opcode_wd),
+    .wd     (control_read_en_wd),
 
     // from internal hardware
     .de     (1'b0),
@@ -1082,11 +1086,65 @@ module dma_reg_top
 
     // to internal hardware
     .qe     (control_flds_we[0]),
-    .q      (reg2hw.control.opcode.q),
+    .q      (reg2hw.control.read_en.q),
     .ds     (),
 
     // to register interface (read)
-    .qs     (control_opcode_qs)
+    .qs     (control_read_en_qs)
+  );
+
+  //   F[write_en]: 1:1
+  prim_subreg #(
+    .DW      (1),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (1'h1),
+    .Mubi    (1'b0)
+  ) u_control_write_en (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (control_we),
+    .wd     (control_write_en_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (control_flds_we[1]),
+    .q      (reg2hw.control.write_en.q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (control_write_en_qs)
+  );
+
+  //   F[digest]: 3:2
+  prim_subreg #(
+    .DW      (2),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (2'h0),
+    .Mubi    (1'b0)
+  ) u_control_digest (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (control_we),
+    .wd     (control_digest_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (control_flds_we[2]),
+    .q      (reg2hw.control.digest.q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (control_digest_qs)
   );
 
   //   F[hardware_handshake_enable]: 4:4
@@ -1108,7 +1166,7 @@ module dma_reg_top
     .d      ('0),
 
     // to internal hardware
-    .qe     (control_flds_we[1]),
+    .qe     (control_flds_we[3]),
     .q      (reg2hw.control.hardware_handshake_enable.q),
     .ds     (),
 
@@ -1135,7 +1193,7 @@ module dma_reg_top
     .d      ('0),
 
     // to internal hardware
-    .qe     (control_flds_we[2]),
+    .qe     (control_flds_we[4]),
     .q      (reg2hw.control.digest_swap.q),
     .ds     (),
 
@@ -1162,7 +1220,7 @@ module dma_reg_top
     .d      (hw2reg.control.initial_transfer.d),
 
     // to internal hardware
-    .qe     (control_flds_we[3]),
+    .qe     (control_flds_we[5]),
     .q      (reg2hw.control.initial_transfer.q),
     .ds     (),
 
@@ -1189,7 +1247,7 @@ module dma_reg_top
     .d      (hw2reg.control.abort.d),
 
     // to internal hardware
-    .qe     (control_flds_we[4]),
+    .qe     (control_flds_we[6]),
     .q      (reg2hw.control.abort.q),
     .ds     (),
 
@@ -1216,7 +1274,7 @@ module dma_reg_top
     .d      (hw2reg.control.go.d),
 
     // to internal hardware
-    .qe     (control_flds_we[5]),
+    .qe     (control_flds_we[7]),
     .q      (reg2hw.control.go.q),
     .ds     (),
 
@@ -3664,7 +3722,11 @@ module dma_reg_top
   assign transfer_width_wd = reg_wdata[1:0];
   assign control_we = racl_addr_hit_write[17] & reg_we & !reg_error;
 
-  assign control_opcode_wd = reg_wdata[3:0];
+  assign control_read_en_wd = reg_wdata[0];
+
+  assign control_write_en_wd = reg_wdata[1];
+
+  assign control_digest_wd = reg_wdata[3:2];
 
   assign control_hardware_handshake_enable_wd = reg_wdata[4];
 
@@ -3957,7 +4019,9 @@ module dma_reg_top
       end
 
       racl_addr_hit_read[17]: begin
-        reg_rdata_next[3:0] = control_opcode_qs;
+        reg_rdata_next[0] = control_read_en_qs;
+        reg_rdata_next[1] = control_write_en_qs;
+        reg_rdata_next[3:2] = control_digest_qs;
         reg_rdata_next[4] = control_hardware_handshake_enable_qs;
         reg_rdata_next[5] = control_digest_swap_qs;
         reg_rdata_next[8] = control_initial_transfer_qs;

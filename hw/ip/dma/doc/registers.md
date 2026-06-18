@@ -484,13 +484,13 @@ Other values are reserved.
 ## CONTROL
 Control register for DMA data movement.
 - Offset: `0x44`
-- Reset default: `0x0`
+- Reset default: `0x3`
 - Reset mask: `0x8800013f`
 
 ### Fields
 
 ```wavejson
-{"reg": [{"name": "opcode", "bits": 4, "attr": ["rw"], "rotate": 0}, {"name": "hardware_handshake_enable", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "digest_swap", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 2}, {"name": "initial_transfer", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 18}, {"name": "abort", "bits": 1, "attr": ["wo"], "rotate": -90}, {"bits": 3}, {"name": "go", "bits": 1, "attr": ["rw"], "rotate": -90}], "config": {"lanes": 1, "fontsize": 10, "vspace": 270}}
+{"reg": [{"name": "read_en", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "write_en", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "digest", "bits": 2, "attr": ["rw"], "rotate": -90}, {"name": "hardware_handshake_enable", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "digest_swap", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 2}, {"name": "initial_transfer", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 18}, {"name": "abort", "bits": 1, "attr": ["wo"], "rotate": -90}, {"bits": 3}, {"name": "go", "bits": 1, "attr": ["rw"], "rotate": -90}], "config": {"lanes": 1, "fontsize": 10, "vspace": 270}}
 ```
 
 |  Bits  |  Type  |  Reset  | Name                                                             |
@@ -503,7 +503,9 @@ Control register for DMA data movement.
 |  7:6   |        |         | Reserved                                                         |
 |   5    |   rw   |   0x0   | [digest_swap](#control--digest_swap)                             |
 |   4    |   rw   |   0x0   | [hardware_handshake_enable](#control--hardware_handshake_enable) |
-|  3:0   |   rw   |   0x0   | [opcode](#control--opcode)                                       |
+|  3:2   |   rw   |   0x0   | [digest](#control--digest)                                       |
+|   1    |   rw   |   0x1   | [write_en](#control--write_en)                                   |
+|   0    |   rw   |   0x1   | [read_en](#control--read_en)                                     |
 
 ### CONTROL . go
 Setting this bit triggers the DMA operation.
@@ -537,17 +539,22 @@ Used to clear FIFOs from low speed IO peripherals receiving data, e.g., I3C rece
   Note assumption is the peripheral lowers input once FIFO is cleared.
 No explicit clearing necessary.
 
-### CONTROL . opcode
-Defines the type of DMA operations.
+### CONTROL . digest
+Selects the inline hashing digest computed over the moved data.
 
-| Value   | Name   | Description                                             |
-|:--------|:-------|:--------------------------------------------------------|
-| 0x0     | COPY   | Copy Operation, Simple copy from source to destination. |
-| 0x1     | SHA256 | Perform inline hashing using SHA256.                    |
-| 0x2     | SHA384 | Perform inline hashing using SHA384.                    |
-| 0x3     | SHA512 | Perform inline hashing using SHA512.                    |
+| Value   | Name   | Description                          |
+|:--------|:-------|:-------------------------------------|
+| 0x0     | NONE   | No inline hashing.                   |
+| 0x1     | SHA256 | Perform inline hashing using SHA256. |
+| 0x2     | SHA384 | Perform inline hashing using SHA384. |
+| 0x3     | SHA512 | Perform inline hashing using SHA512. |
 
-Other values are reserved.
+
+### CONTROL . write_en
+1 = write to destination; 0 = verify (digest-only, no write).
+
+### CONTROL . read_en
+1 = read from source memory; 0 = memset (write data taken from SRC_ADDR_LO pattern).
 
 ## SRC_CONFIG
 Defines the addressing behavior of the DMA for the source address.

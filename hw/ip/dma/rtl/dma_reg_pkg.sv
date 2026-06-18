@@ -147,8 +147,14 @@ package dma_reg_pkg;
       logic        q;
     } hardware_handshake_enable;
     struct packed {
-      logic [3:0]  q;
-    } opcode;
+      logic [1:0]  q;
+    } digest;
+    struct packed {
+      logic        q;
+    } write_en;
+    struct packed {
+      logic        q;
+    } read_en;
   } dma_reg2hw_control_reg_t;
 
   typedef struct packed {
