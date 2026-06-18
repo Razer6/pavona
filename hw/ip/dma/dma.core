@@ -16,8 +16,13 @@ filesets:
       - lowrisc:ip:tlul
       - lowrisc:ip:dma_pkg
       - lowrisc:virtual_constants:top_racl_pkg
+      - lowrisc:ip:aes
+      - lowrisc:ip:edn_pkg
+      - lowrisc:ip:keymgr_pkg
+      - lowrisc:ip:lc_ctrl_pkg
     files:
       - rtl/dma_reg_top.sv
+      - rtl/dma_aes.sv
       - rtl/dma.sv
       - rtl/dma_tlul_cmd_intg_gen.sv
       - rtl/dma_tlul_adapter_host.sv

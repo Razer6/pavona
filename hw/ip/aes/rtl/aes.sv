@@ -214,6 +214,8 @@ module aes
     .alert_recov_o          ( alert[AlertRecovCtrlUpdateErrIdx] ),
     .alert_fatal_o          ( alert[AlertFatalFaultIdx]         ),
 
+    .gcm_init_done_o        (                                   ), // GCM sequencing internal to AES
+
     .reg2hw                 ( reg2hw                            ),
     .hw2reg                 ( hw2reg                            )
   );
