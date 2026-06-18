@@ -80,13 +80,30 @@ If interrupt acknowledgement is required, software must enable it in the [`CLEAR
 The address space for this write operation is configured using the [`CLEAR_INTR_BUS`](registers.md#clear_intr_bus) register.
 The specific address and data value to be written for acknowledgement are defined by the [`INTR_SRC_ADDR_0-10`](registers.md#intr_src_addr) and [`INTR_SRC_WR_VAL_0-10`](registers.md#intr_src_wr_val) registers, respectively.
 
+## Selecting the Operation
+
+The type of operation performed by the DMA is selected by three orthogonal fields in the [`CONTROL`](registers.md#control) register:
+
+  * `read_en`: when set, the DMA reads from the source memory. When cleared, no source read is performed and the write data is instead taken from the pattern programmed in the [`SRC_ADDR_LO`](registers.md#src_addr_lo) register.
+  * `write_en`: when set, the DMA writes to the destination memory. When cleared, no write is performed.
+  * `digest`: selects the inline SHA-2 digest computed over the moved data (`NONE`, `SHA256`, `SHA384`, or `SHA512`).
+
+Combining these fields yields the following operations:
+
+  * **Copy:** Set `read_en = 1`, `write_en = 1`, and `digest = NONE`. The DMA reads data from the source and writes it to the destination.
+  * **Copy + Hash:** Set `read_en = 1`, `write_en = 1`, and `digest` to the desired SHA-2 algorithm. The DMA reads data from the source, writes it to the destination, and concurrently computes the hash digest of the transferred data (see [Inline Hashing](#inline-hashing)).
+  * **Memset:** Set `read_en = 0`, `write_en = 1`, and `digest = NONE`. No source read is performed; instead the DMA fills the destination with the pattern programmed in [`SRC_ADDR_LO`](registers.md#src_addr_lo). For sub-word transfer widths (1 or 2 bytes) the pattern is replicated across the bus word in little-endian order, keyed on the destination address.
+  * **Verify:** Set `read_en = 1`, `write_en = 0`, and `digest` to the desired SHA-2 algorithm. The DMA reads a memory region and computes its digest without writing to any destination, which is useful for integrity or attestation checks. Software reads the result from the [`SHA2_DIGEST_0-15`](registers.md#sha2_digest) registers.
+
+The DMA rejects illegal field combinations (for example a no-op with no read and no write, hashing without a read, reading and discarding data without computing a digest, or a hardware handshake with neither read nor write enabled). Such a configuration is reported via the error bit in the [`ERROR_CODE`](registers.md#error_code) register.
+
 ## Inline Hashing
 
 The DMA incorporates an inline hashing capability for SHA-2 algorithms (SHA-256, SHA-384, and SHA-512).
 This allows the DMA to compute the hash digest of the transferred data concurrently with performing the memory transfer.
 
-To enable inline hashing, software must set the desired SHA-2 algorithm as the opcode in the `opcode` field of the [`CONTROL`](registers.md#control) register.
-This will instruct the DMA to perform the data copy operation along with the hash computation.
+To enable inline hashing, software must select the desired SHA-2 algorithm in the `digest` field of the [`CONTROL`](registers.md#control) register.
+This instructs the DMA to compute the hash digest of the data being moved.
 
 When initiating a transfer with inline hashing, the `initial_transfer` bit in the [`CONTROL`](registers.md#control) register must be asserted.
 This signals the DMA to initialize its internal hash state.

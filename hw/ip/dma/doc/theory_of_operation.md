@@ -30,6 +30,26 @@ The DMA is envisioned to operate in two main modes:
     up or drain out hardware FIFO data for low speed IO peripherals (or
     other peripherals) that support it.
 
+The data movement performed in either mode is selected by three
+orthogonal fields of the [*CONTROL*](registers.md#control) register
+(`read_en`, `write_en`, and `digest`), which combine to yield the
+following operations:
+
+1.  **Copy** (`read_en = 1`, `write_en = 1`, `digest = NONE`): read
+    data from the source and write it to the destination.
+2.  **Copy + Hash** (`read_en = 1`, `write_en = 1`, `digest = SHA*`):
+    copy the data while also computing its SHA-2 digest on-the-fly.
+3.  **Memset** (`read_en = 0`, `write_en = 1`, `digest = NONE`): fill
+    the destination with the pattern programmed in
+    [*SRC_ADDR_LO*](registers.md#src_addr_lo) without reading the
+    source.
+4.  **Verify** (`read_en = 1`, `write_en = 0`, `digest = SHA*`): read a
+    region and compute its digest without writing to a destination, for
+    integrity or attestation checks.
+
+Illegal field combinations are rejected and reported in the
+[*ERROR_CODE*](registers.md#error_code) register.
+
 ### Generic DMA operation
 
 Mode of operation & interactions with components considered external to
@@ -54,8 +74,10 @@ the Trusted Compute Boundary
 
     -   Size of the data object to be moved.
 
-    -   Opcode - Type of any optionally supported operation e.g.
-        Cryptographic hash.
+    -   Type of operation - the data movement and any optionally
+        supported inline operation (e.g. a cryptographic hash),
+        selected via the `read_en`, `write_en`, and `digest` fields
+        of the control register.
 
 -   Secure-side firmware parses the command object passed through the mailbox.
 -   Secure-side firmware sanitizes mailbox objects as required.
@@ -65,9 +87,11 @@ the Trusted Compute Boundary
     corresponding address space Identifier.
 -   Secure-side firmware configures DMA destination address register &
     corresponding address space Identifier.
--   Secure-side firmware completes other configurations such as operation size,
-    OPCODE of any additional inline operations requested (e.g.
-    cryptographic hash calculation of data blob being moved).
+-   Secure-side firmware completes other configurations such as operation size
+    and the type of operation, selecting the data movement (`read_en`,
+    `write_en`) and any additional inline operation requested (e.g. the
+    `digest` field for cryptographic hash calculation of the data blob
+    being moved).
 -   Secure-side firmware triggers the DMA operation.
 -   DMA hardware performs appropriate address and configuration checks
     to enforce the defined security and access control properties.
@@ -156,8 +180,9 @@ hardware handshake DMA operation.
     per the Source Configuration description above.
 -   [*DMAC Control register*](registers.md#control):
 
-    -   Opcode: Type of operation requested. Typically set to copy
-        operation in case of hardware handshake mode of operation.
+    -   Type of operation: selected via the `read_en`, `write_en`, and
+        `digest` fields. For hardware handshake mode this is typically a
+        copy operation (`read_en = 1`, `write_en = 1`, `digest = NONE`).
 
     -   Hardware handshake enable = 1
 
@@ -220,8 +245,9 @@ hardware handshake DMA operation.
 
 -   [*DMAC Control register*](registers.md#control)
 
-    -   Opcode: Type of operation requested. Typically set to copy
-        operation in case of hardware handshake mode of operation.
+    -   Type of operation: selected via the `read_en`, `write_en`, and
+        `digest` fields. For hardware handshake mode this is typically a
+        copy operation (`read_en = 1`, `write_en = 1`, `digest = NONE`).
 
     -   Hardware handshake enable = 1
 
@@ -328,8 +354,9 @@ the data being transferred, using any of the following algorithms:
 - SHA-384 - SHA-2 hash with a 384-bit digest.
 - SHA-512 - SHA-2 hash with a 512-bit digest.
 
-This is achieved simply by modifying the [*opcode*](registers.md#control--opcode)
-field of the [*CONTROL*](registers.md#control) and collecting the
+This is achieved simply by selecting the desired algorithm in the
+[*digest*](registers.md#control--digest) field of the
+[*CONTROL*](registers.md#control) register and collecting the
 [digest](registers.md#sha2_digest) from the registers interface when the
 transfer has completed.
 
