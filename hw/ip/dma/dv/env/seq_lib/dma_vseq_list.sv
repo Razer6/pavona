@@ -22,3 +22,5 @@
 `include "dma_mem_enabled_vseq.sv"
 `include "dma_hashing_partial_vseq.sv"
 `include "dma_overlap_vseq.sv"
+`include "dma_memset_vseq.sv"
+`include "dma_verify_vseq.sv"

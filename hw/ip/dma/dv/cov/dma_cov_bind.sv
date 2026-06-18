@@ -13,6 +13,11 @@ module dma_cov_bind;
     .cross_port        (cross_port),
     .rd_done_q         (rd_done_q),
     .sha2_consumed_q   (sha2_consumed_q),
-    .use_inline_hashing(use_inline_hashing)
+    .use_inline_hashing(use_inline_hashing),
+    .do_read           (do_read),
+    .do_write          (do_write),
+    .digest_sel        (digest_sel),
+    .set_error_code    (set_error_code),
+    .next_error        (next_error)
   );
 endmodule

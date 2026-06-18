@@ -631,7 +631,11 @@ class dma_base_vseq extends cip_base_vseq #(
     // Note: Importantly we must perform this whilst we have exclusive access and we must preserve
     // the state of the 'abort' bit, so that we do not remove a requested Abort.
 
-    data = get_csr_val_with_updated_field(ral.control.opcode, data, int'(opcode));
+    // The CONTROL register now carries orthogonal read_en/write_en/digest fields; decode the
+    // DV-side operation selector into them.
+    data = get_csr_val_with_updated_field(ral.control.read_en, data, opcode_read_en(opcode));
+    data = get_csr_val_with_updated_field(ral.control.write_en, data, opcode_write_en(opcode));
+    data = get_csr_val_with_updated_field(ral.control.digest, data, opcode_digest(opcode));
     data = get_csr_val_with_updated_field(ral.control.initial_transfer, data, initial_transfer);
     data = get_csr_val_with_updated_field(ral.control.hardware_handshake_enable, data, handshake);
     data = get_csr_val_with_updated_field(ral.control.abort, data, abort_pending);
@@ -812,15 +816,15 @@ class dma_base_vseq extends cip_base_vseq #(
     digest = '0;
     `uvm_info(`gfn, "DMA: Read SHA2 digest", UVM_MEDIUM)
     case (op)
-      OpcSha256: begin
+      OpcSha256, OpcVerifySha256: begin
         sha_digest_size = 8;
         sha_mode = "SHA2-256";
       end
-      OpcSha384: begin
+      OpcSha384, OpcVerifySha384: begin
         sha_digest_size = 12;
         sha_mode = "SHA2-384";
       end
-      OpcSha512: begin
+      OpcSha512, OpcVerifySha512: begin
         sha_digest_size = 16;
         sha_mode = "SHA2-512";
       end

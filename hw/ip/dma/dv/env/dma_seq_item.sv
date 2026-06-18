@@ -116,12 +116,48 @@ class dma_seq_item extends uvm_sequence_item;
     (lsio_trigger_i & handshake_intr_en) != 0;
   }
 
-  // SHA hashing supports only 4-byte transactions
+  // Inline hashing (copy+hash and verify) supports only 4-byte transactions
   constraint transfer_width_c {
     if (valid_dma_config) {
-      opcode inside {OpcSha256, OpcSha384, OpcSha512} -> per_transfer_width == DmaXfer4BperTxn;
+      opcode inside {OpcSha256, OpcSha384, OpcSha512,
+                     OpcVerifySha256, OpcVerifySha384, OpcVerifySha512} ->
+        per_transfer_width == DmaXfer4BperTxn;
     }
   }
+
+  // Hardware handshake drains and completes via reads and writes respectively, so it is only legal
+  // for operations that both read and write (copy / copy+hash). For valid configs, exclude memset
+  // (no read) and verify (no write) when handshaking. Memset/verify with handshake remain reachable
+  // as rejected (DmaOpcodeErr) configurations when valid_dma_config is not set.
+  constraint handshake_opcode_c {
+    if (valid_dma_config && handshake) {
+      opcode inside {OpcCopy, OpcSha256, OpcSha384, OpcSha512};
+    }
+  }
+
+  // Keep the everyday copy/hash space well represented when a sequence leaves the operation
+  // unconstrained; the directed memset/verify sequences pin the opcode explicitly.
+  constraint opcode_dist_c {
+    opcode dist {
+      OpcCopy                                    := 40,
+      [OpcSha256:OpcSha512]                      := 30,
+      OpcMemset                                  := 15,
+      [OpcVerifySha256:OpcVerifySha512]          := 15
+    };
+  }
+
+  // Convenience predicates for the operation's read/write/digest semantics. Memset does not read
+  // from a source buffer; verify does not write to a destination buffer.
+  function bit op_reads();
+    return opcode != OpcMemset;
+  endfunction
+  function bit op_writes();
+    return !(opcode inside {OpcVerifySha256, OpcVerifySha384, OpcVerifySha512});
+  endfunction
+  function bit op_has_digest();
+    return opcode inside {OpcSha256, OpcSha384, OpcSha512,
+                          OpcVerifySha256, OpcVerifySha384, OpcVerifySha512};
+  endfunction
 
   // Constrain the size of sha digest array to support SHA-256, SHA-382 and SHA-512
   constraint sha2_digest_c {
@@ -142,7 +178,9 @@ class dma_seq_item extends uvm_sequence_item;
     // Set solve order to make sure source address is randomized correctly in case
     // valid_dma_config is set
     solve mem_range_base, mem_range_limit before src_addr;
-    if (valid_dma_config) {
+    // For memset (read_en=0) the source address register holds the fill pattern rather than a
+    // memory address, so none of the address alignment / range constraints below apply to it.
+    if (valid_dma_config && opcode != OpcMemset) {
       // For valid configurations, the source address must be aligned to the transfer width.
       per_transfer_width == DmaXfer4BperTxn -> src_addr[1:0] == 2'd0;
       per_transfer_width == DmaXfer2BperTxn -> src_addr[0] == 1'b0;
@@ -226,7 +264,11 @@ class dma_seq_item extends uvm_sequence_item;
     }
     // SoC System bus is full 64-bit (wide `dma_tl_agent`): no 4GiB-window constraint on `dst_addr`.
 
-    if (src_asid == dst_asid) {
+    // Source/destination overlap only matters when the operation both reads a source buffer and
+    // writes a destination buffer (copy/hash). For memset `src_addr` is a pattern, and for verify
+    // there is no destination buffer, so the overlap avoidance does not apply.
+    if (src_asid == dst_asid &&
+        opcode inside {OpcCopy, OpcSha256, OpcSha384, OpcSha512}) {
       // Avoid overlap between source and destination buffers, also leaving a slight gap so
       // that any out-of-bounds access does not hit a contiguous buffer
       //
@@ -287,7 +329,9 @@ class dma_seq_item extends uvm_sequence_item;
       // SHA2 can accept a partial 32-bit word only at the very end of the message being hashed,
       // so non-final transfers must have a size of 4n. Since 4B/txn mode demands 4n alignment
       // already, constraining the chunk size is enough to guarantee 4n alignment of the chunk end.
-      opcode inside {OpcSha256, OpcSha384, OpcSha512} -> chunk_data_size[1:0] == 2'b00;
+      opcode inside {OpcSha256, OpcSha384, OpcSha512,
+                     OpcVerifySha256, OpcVerifySha384, OpcVerifySha512} ->
+        chunk_data_size[1:0] == 2'b00;
 
       // Source and destination addresses must have the same alignment at the start of non-initial
       // chunks when either is not wrapping chunks.
@@ -428,7 +472,7 @@ class dma_seq_item extends uvm_sequence_item;
         $sformatf("\n\tdst_chunk_wrap          : %0d",    dst_chunk_wrap),
         $sformatf("\n\tsrc_addr_inc            : %0d",    src_addr_inc),
         $sformatf("\n\tdst_addr_inc            : %0d",    dst_addr_inc),
-        $sformatf("\n\topcode                  : %0d",    opcode),
+        $sformatf("\n\topcode                  : %s",     opcode.name()),
         $sformatf("\n\tper_transfer_width      : %0d",    per_transfer_width),
         $sformatf("\n\tchunk_data_size         : 0x%x",   chunk_data_size),
         $sformatf("\n\ttotal_data_size         : 0x%x",   total_data_size)
@@ -505,14 +549,30 @@ class dma_seq_item extends uvm_sequence_item;
       valid_config = 0;
     end
 
-    // Check if operation is valid
-    if (opcode inside {OpcSha256, OpcSha384, OpcSha512}) begin
-      if (per_transfer_width != DmaXfer4BperTxn) begin
-        `uvm_info(`gfn, $sformatf(" - SHA hashing operates only on 4B/txn"), UVM_MEDIUM)
-        valid_config = 0;
-      end
-    end else if (opcode != OpcCopy) begin
-      `uvm_info(`gfn, $sformatf(" - Unsupported DMA operation: %s", opcode.name()), UVM_MEDIUM)
+    // Check if operation is valid. Inline hashing (copy+hash and verify) operates only on 4B/txn.
+    if (op_has_digest() && per_transfer_width != DmaXfer4BperTxn) begin
+      `uvm_info(`gfn, $sformatf(" - SHA hashing operates only on 4B/txn"), UVM_MEDIUM)
+      valid_config = 0;
+    end
+    // Legal-combo check, mirroring the DUT's `DmaOpcodeErr` gating on the captured CONTROL fields:
+    //  - at least one of read/write must be enabled (no no-op),
+    //  - hashing requires a read (digest covers the read data),
+    //  - a write with no digest is meaningless when there is no read (read-and-discard),
+    //  - hardware handshake drains/completes via reads and writes, so it requires both.
+    if (!op_reads() && !op_writes()) begin
+      `uvm_info(`gfn, " - No-op: neither read nor write enabled", UVM_MEDIUM)
+      valid_config = 0;
+    end
+    if (op_has_digest() && !op_reads()) begin
+      `uvm_info(`gfn, " - Inline hashing requires a source read", UVM_MEDIUM)
+      valid_config = 0;
+    end
+    if (!op_writes() && !op_has_digest()) begin
+      `uvm_info(`gfn, " - Read with no write and no digest discards the data", UVM_MEDIUM)
+      valid_config = 0;
+    end
+    if (handshake && (!op_reads() || !op_writes())) begin
+      `uvm_info(`gfn, " - Hardware handshake requires both read and write", UVM_MEDIUM)
       valid_config = 0;
     end
 
@@ -532,7 +592,7 @@ class dma_seq_item extends uvm_sequence_item;
     // For all valid configurations, either source or destination address space Id must point
     // to OT internal address space, but the memory range restriction does not apply if _both_
     // are within the OT internal address space.
-    if (src_asid == OtInternalAddr && dst_asid != OtInternalAddr) begin
+    if (op_reads() && src_asid == OtInternalAddr && dst_asid != OtInternalAddr) begin
       if (mem_range_valid && !is_buffer_in_dma_memory_region(src_addr[31:0],
                                                              src_memory_range)) begin
         // If source address space ID points to OT internal address space,
@@ -544,7 +604,7 @@ class dma_seq_item extends uvm_sequence_item;
                 UVM_MEDIUM)
         valid_config = 0;
       end
-    end else if (dst_asid == OtInternalAddr && src_asid != OtInternalAddr) begin
+    end else if (op_writes() && dst_asid == OtInternalAddr && src_asid != OtInternalAddr) begin
       // If destination address space ID points to OT internal address space
       // it must be within DMA enabled address range.
       if (mem_range_valid && !is_buffer_in_dma_memory_region(dst_addr[31:0],
@@ -559,12 +619,13 @@ class dma_seq_item extends uvm_sequence_item;
     end
 
     // Check that the upper 32 bits of the destination and source address are zero for
-    // 32-bit address spaces
-    if (dst_asid != SocSystemAddr && |dst_addr[63:32]) begin
+    // 32-bit address spaces. These per-side checks only apply when the side is actually used:
+    // memset has no source read, verify has no destination write.
+    if (op_writes() && dst_asid != SocSystemAddr && |dst_addr[63:32]) begin
       `uvm_info(`gfn, " - Destination address out of range for destination ASID", UVM_MEDIUM)
       valid_config = 0;
     end
-    if (src_asid != SocSystemAddr && |src_addr[63:32]) begin
+    if (op_reads() && src_asid != SocSystemAddr && |src_addr[63:32]) begin
       `uvm_info(`gfn, " - Source addess out of range for source ASID", UVM_MEDIUM)
       valid_config = 0;
     end
@@ -587,11 +648,13 @@ class dma_seq_item extends uvm_sequence_item;
       end
     endcase
 
-    if (|(src_addr & align_mask)) begin
+    // Source/destination alignment is only checked for the side actually exercised: memset has no
+    // source read (src_addr is a fill pattern), verify has no destination write.
+    if (op_reads() && |(src_addr & align_mask)) begin
       `uvm_info(`gfn, " - Source address does not meet alignment requirements", UVM_MEDIUM)
       valid_config = 0;
     end
-    if (|(dst_addr & align_mask)) begin
+    if (op_writes() && |(dst_addr & align_mask)) begin
       `uvm_info(`gfn, " - Destination address does not meet alignment requirements", UVM_MEDIUM)
       valid_config = 0;
     end
@@ -645,6 +708,22 @@ class dma_seq_item extends uvm_sequence_item;
     `DV_CHECK(per_transfer_width inside {DmaXfer1BperTxn, DmaXfer2BperTxn, DmaXfer4BperTxn},
               $sformatf("Unexpected transfer width %d", per_transfer_width))
     return transfer_width_to_num_bytes(per_transfer_width);
+  endfunction
+
+  // For memset, the fill pattern is taken from the low 32 bits of the source address register.
+  function bit [31:0] fill_value();
+    return src_addr[31:0];
+  endfunction
+
+  // The byte that the DUT writes to destination byte-lane `lane` (0..3) for a memset, after the
+  // dst-keyed replication of the (little-endian) fill pattern. Mirrors the RTL `fill_replicate`
+  // mux: 1B replicates byte 0, 2B replicates the low halfword, 4B passes the word through.
+  function bit [7:0] fill_byte_for_lane(int lane);
+    case (per_transfer_width)
+      DmaXfer1BperTxn: return fill_value()[7:0];
+      DmaXfer2BperTxn: return fill_value()[8*(lane % 2) +: 8];
+      default:         return fill_value()[8*(lane % 4) +: 8];
+    endcase
   endfunction
 
   // Reset all variable values
