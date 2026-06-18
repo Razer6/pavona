@@ -38,4 +38,16 @@ module dma_bind;
   // only the 32-bit `tl_h2d_t`, and there is no 64-bit `dma_tl_h2d_t`-aware equivalent, so the wide
   // ports are protocol-checked by the scoreboard/agent rather than by a bound assertion.
 
+  // Bind the memset/verify no-traffic and no-deadlock assertions.
+  bind dma dma_memset_verify_sva u_dma_memset_verify_sva (
+    .clk_i,
+    .rst_ni,
+    .gated_clk    (gated_clk),
+    .ctrl_state_q (ctrl_state_q),
+    .do_read      (do_read),
+    .do_write     (do_write),
+    .read_issue   (read_issue),
+    .write_issue  (write_issue)
+  );
+
 endmodule

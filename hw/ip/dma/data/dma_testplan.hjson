@@ -351,6 +351,65 @@
         stage: V2
         tests: ["dma_overlap"]
       }
+      {
+        name: dma_memset
+        desc: '''
+              Directed test for the memset operation (read_en=0, write_en=1, digest=none).
+
+              Stimulus:
+              - Configure memory transfers with read_en cleared so no source is read; the fill
+                pattern is taken from SRC_ADDR_LO and replicated to the destination, keyed by the
+                transfer width (1B/2B/4B) and destination byte lane.
+              - Exercise multi-beat (and partial final beat for 1B/2B) and multi-chunk transfers.
+
+              Checking:
+              - The scoreboard checks that no source read traffic is generated and that the
+                destination memory holds the replicated, little-endian fill pattern (byte-correct
+                for 1B/2B/4B including the partial final beat).
+              - The no-source-traffic SVA confirms no source-port request is issued; the no-deadlock
+                SVA confirms the FSM always reaches DmaIdle.
+              '''
+        stage: V2
+        tests: ["dma_memset"]
+      }
+      {
+        name: dma_verify
+        desc: '''
+              Directed test for the verify operation (read_en=1, write_en=0, digest=sha256/384/512).
+
+              Stimulus:
+              - Configure 4B memory transfers with write_en cleared so the source is read and
+                hashed but no destination write occurs; completion is read-driven.
+              - Exercise multi-beat and multi-chunk transfers across all three digest widths.
+
+              Checking:
+              - The scoreboard checks that no destination write traffic is generated and that the
+                resulting digest matches the DPI SHA reference computed over the read bytes.
+              - The no-destination-traffic SVA confirms no destination-port request is issued; the
+                no-deadlock SVA confirms the FSM always reaches DmaShaFinalize/DmaIdle.
+              '''
+        stage: V2
+        tests: ["dma_verify"]
+      }
+      {
+        name: dma_control_combo_reject
+        desc: '''
+              Test that illegal CONTROL field combinations are rejected with DmaOpcodeErr.
+
+              Stimulus:
+              - Through the randomized generic/stress transfers, drive CONTROL field combinations
+                that are illegal: no-op (read_en=0 and write_en=0), inline hashing without a read
+                (digest!=none and read_en=0), read-and-discard (write_en=0 and digest=none), and
+                hardware handshake paired with a missing read or write path.
+
+              Checking:
+              - The DUT raises ERROR_CODE.opcode_error and the Error interrupt; the scoreboard
+                predicts the rejection from the legal-combo model and the dma_fsm_cg covergroup
+                covers the rejected combinations (cp_combo_reject).
+              '''
+        stage: V2
+        tests: ["dma_generic_stress", "dma_memory_stress"]
+      }
     ]
     covergroups: [
       {
@@ -367,6 +426,10 @@
                 cross-port copies.
               - SHA back-pressure corner: in DmaReadPrime/DmaOverlap a captured beat awaits the SHA
                 engine consuming it (rd_done_q && !sha2_consumed_q), stalling the read side.
+              - CONTROL field cross (read_en x write_en x digest) over the legal operation set:
+                copy, copy+hash, memset (read_en=0), verify (write_en=0).
+              - Rejected CONTROL combinations raising DmaOpcodeErr (no-op, hash-without-read,
+                read-and-discard, handshake-without-read/write).
               '''
       }
       {

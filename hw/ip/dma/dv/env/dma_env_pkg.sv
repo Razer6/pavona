@@ -45,6 +45,42 @@ package dma_env_pkg;
     NumDmaInterrupts
   } dma_intr_e;
 
+  // DV-side operation selector. The RTL CONTROL register no longer carries an `opcode` field; it
+  // exposes orthogonal `read_en`/`write_en`/`digest` controls. This enum is a convenience handle
+  // used throughout the DV (sequences, scoreboard, coverage) that decodes to those three fields via
+  // the helpers below. Values are arbitrary DV labels and do not correspond to any CSR encoding.
+  typedef enum {
+    OpcCopy,         // read_en=1, write_en=1, digest=NONE
+    OpcSha256,       // read_en=1, write_en=1, digest=SHA256  (copy + hash)
+    OpcSha384,       // read_en=1, write_en=1, digest=SHA384
+    OpcSha512,       // read_en=1, write_en=1, digest=SHA512
+    OpcMemset,       // read_en=0, write_en=1, digest=NONE    (fill from SRC_ADDR_LO pattern)
+    OpcVerifySha256, // read_en=1, write_en=0, digest=SHA256  (read + hash, no write)
+    OpcVerifySha384, // read_en=1, write_en=0, digest=SHA384
+    OpcVerifySha512  // read_en=1, write_en=0, digest=SHA512
+  } opcode_e;
+
+  // Decode an operation to the captured CONTROL fields.
+  function automatic bit opcode_read_en(opcode_e op);
+    return !(op == OpcMemset);  // every op reads except memset
+  endfunction
+  function automatic bit opcode_write_en(opcode_e op);
+    return !(op inside {OpcVerifySha256, OpcVerifySha384, OpcVerifySha512});  // verify does not write
+  endfunction
+  // CONTROL.digest field value (2-bit, matches dma_pkg::dma_digest_e encoding).
+  function automatic bit [1:0] opcode_digest(opcode_e op);
+    case (op)
+      OpcSha256, OpcVerifySha256: return 2'd1;  // DigestSha256
+      OpcSha384, OpcVerifySha384: return 2'd2;  // DigestSha384
+      OpcSha512, OpcVerifySha512: return 2'd3;  // DigestSha512
+      default:                    return 2'd0;  // DigestNone (copy, memset)
+    endcase
+  endfunction
+  // True if the operation computes an inline digest (copy+hash or verify).
+  function automatic bit opcode_has_digest(opcode_e op);
+    return (opcode_digest(op) != 2'd0);
+  endfunction
+
   // Completion status bits (DV-internal)
   typedef enum {
     StatusDone,
