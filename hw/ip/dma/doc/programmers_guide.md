@@ -134,6 +134,61 @@ Once the transfer is complete, the computed hash digest value can be read from t
 The endianness of the resulting hash digest can be configured using the `digest_swap` bit in the [`CONTROL`](registers.md#control) register.
 Changing this bit affects the digests of subsequent DMA transfers; it does not alter the current contents of the [`SHA2_DIGEST_0-15`](registers.md#sha2_digest) registers.
 
+## Inline AES Encryption
+
+The DMA can encrypt or decrypt the moved data on-the-fly using AES-CTR or AES-GCM (see [Theory of Operation](theory_of_operation.md#inline-aes-encryption)).
+To program an inline AES transfer:
+
+1. Provide the key: write the two shares to [`KEY_SHARE0`](registers.md#key_share0)/[`KEY_SHARE1`](registers.md#key_share1) (their XOR is the key), or set [`AES_CTRL.sideload`](registers.md#aes_ctrl--sideload) to use the key-manager key.
+2. Set [`AES_CTRL.key_len`](registers.md#aes_ctrl--key_len) and, for GCM with associated data, write the [`AAD`](registers.md#aad) registers and [`AES_CTRL.aad_blocks`](registers.md#aes_ctrl--aad_blocks).
+3. Write the 96-bit nonce to [`IV`](registers.md#iv)`[3:1]` (the counter word `IV[0]` is hardware-managed).
+4. For a GCM decrypt, write the expected authentication tag to [`TAG_IN`](registers.md#tag_in).
+5. Configure the transfer as usual (source/destination addresses, sizes, 4-byte transfer width) and select the operation in [`CONTROL`](registers.md#control): `aes_op` = `Enc`/`Dec` and `aes_mode` = `CTR`/`GCM`, with `digest` = `None`. Assert `initial_transfer`.
+6. Start the transfer with `go`.
+
+The transfer must use a 4-byte transfer width and nonzero total/chunk sizes that are multiples
+of 16 bytes. Source and destination independently support the normal DMA addressing modes:
+`increment = 0` accesses one fixed FIFO register on every beat; `increment = 1` advances by
+four bytes per beat. With `wrap = 1`, an incrementing endpoint returns to its programmed base
+at each chunk boundary. With `wrap = 0`, it continues into the next memory region.
+Fixed-address endpoints keep their base address regardless of `wrap`.
+The sizes may differ: a shorter final chunk transfers only the remaining bytes, and a chunk
+size greater than the total completes in one chunk.
+
+In software-paced mode, at an intermediate chunk boundary, `chunk_done` is asserted and `go` and `busy` are cleared.
+Resume by setting `go` with `initial_transfer = 0`. The key, counter, and GHASH state remain
+live, and `CFG_REGWEN` remains locked, including the AES configuration, addresses, and sizes.
+Hardware advances non-wrapping, incrementing addresses by the bytes moved in each chunk.
+Fixed or wrapping endpoints keep their programmed base. AAD is processed once, and
+the GCM tag is generated or checked only after the entire message. To replace a suspended
+message, first abort it and wait for `aborted` and an unlocked `CFG_REGWEN` before reprogramming.
+Starting a new initial transfer while a message is suspended raises an opcode error and wipes
+the retained AES state. GCM supports at most 8191 text blocks (131056 bytes) per message.
+
+For hardware pacing, configure `HANDSHAKE_INTR_ENABLE` and the optional interrupt-clear
+writes, then set `hardware_handshake_enable` along with the initial `go`. Each chunk starts
+when an enabled trigger is high. Arming a new initial transfer clears the previous message's
+`tag_valid` and `tag_failed`, even while waiting for the first trigger.
+Between chunks, `go`, `busy`, the cipher state and the
+configuration lock remain set; `chunk_done` is not raised and no software restart is needed.
+A trigger held high allows the next chunk to start immediately. The trigger source must
+withdraw it (or be cleared by the configured interrupt-clear write) to pause the transfer.
+These triggers authorize an entire chunk, not individual bus beats. An input device must
+provide that many source bytes and an output device must reserve that much destination space
+before triggering. For the final chunk, only the remaining message bytes are transferred.
+Use `increment = 0` for a FIFO data register or `increment = 1, wrap = 1` for a buffer window
+that the device refills or drains between triggers. The AES counter and GHASH state continue
+across chunks regardless of address wrapping.
+
+On completion of a GCM encrypt, read the computed tag from [`TAG_OUT`](registers.md#tag_out) once [`STATUS.tag_valid`](registers.md#status--tag_valid) is set.
+For a GCM decrypt, a tag mismatch sets [`STATUS.tag_failed`](registers.md#status--tag_failed) and [`ERROR_CODE.aes_tag_error`](registers.md#error_code--aes_tag_error), raises the `recov_fault` alert, and suppresses `done`.
+Because the plaintext is written before the tag is checked, the DMA does not provide hardware quarantine of the destination.
+Suppressing `done` does not stop the CPU, another bus master, or a peripheral from reading unauthenticated plaintext.
+Software must block every consumer until `tag_valid` is set and must wipe the destination before reuse when `tag_failed` is set.
+Do not use inline GCM decrypt for security-sensitive plaintext if the integration cannot enforce this access discipline.
+In particular, a peripheral FIFO must buffer and withhold decrypted data until authentication
+succeeds; writes to a device that immediately acts on plaintext cannot be undone on tag failure.
+
 ## Error Condition
 
 For security reasons, the DMA controller performs extensive checking of the configuration registers before starting a transfer.
