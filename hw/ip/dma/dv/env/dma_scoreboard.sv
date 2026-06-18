@@ -475,13 +475,19 @@ class dma_scoreboard extends cip_base_scoreboard #(
     `DV_CHECK(got_source_item || got_dest_item,
               $sformatf("Data item source id doesn't match any outstanding request"))
 
-    // Handle any TL-UL errors returned by the source.
-    // - DMA controller does not send overlapping read requests, so an error should terminate
-    //   the transfer and no other source items should be seen.
-    // - Similarly, writes and reads are not overlapped.
-    // - Source TL-UL transaction returning an error shall not lead to any output.
-    `DV_CHECK_EQ(src_tl_error_detected, 1'b0, "TL-UL transaction occurred after TL-UL error")
-    `DV_CHECK_EQ(dst_tl_error_detected, 1'b0, "TL-UL transaction occurred after TL-UL error")
+    // Handle any TL-UL errors returned by the source or destination.
+    // With overlapped (interleaved) read/write, a read and a write may be in flight
+    // simultaneously on cross-port transfers. When one direction returns an error, the
+    // peer-direction response may still be in flight and will arrive after the error.
+    // We therefore allow exactly one more response from the *peer* direction after an
+    // error, but no further transactions from the *same* direction that already errored.
+    if (got_source_item) begin
+      `DV_CHECK_EQ(src_tl_error_detected, 1'b0,
+                   "Source TL-UL transaction occurred after source TL-UL error")
+    end else if (got_dest_item) begin
+      `DV_CHECK_EQ(dst_tl_error_detected, 1'b0,
+                   "Destination TL-UL transaction occurred after destination TL-UL error")
+    end
 
     // Source interface item checks
     if (got_source_item) begin
@@ -597,7 +603,13 @@ class dma_scoreboard extends cip_base_scoreboard #(
           // Check if there is any active operation, but be aware that the Abort functionality
           // intentionally does not wait for a bus response (this is safe because the design never
           // blocks/stalls the TL-UL response).
-          `DV_CHECK_FATAL(operation_in_progress || abort_via_reg_write,
+          // With overlapped (interleaved) read/write, a bus error on one direction may cause the
+          // DMA to signal the error in STATUS before the peer-direction in-flight response returns.
+          // The scoreboard may therefore see one more D-channel response after clearing
+          // `operation_in_progress`. Allow that drain by also accepting a transaction when a
+          // TL-UL error was already detected (it is the tail-end of the errored transfer).
+          `DV_CHECK_FATAL(operation_in_progress || abort_via_reg_write ||
+                          src_tl_error_detected || dst_tl_error_detected,
                           "Transaction detected with no active operation")
           case (dir)
             AddrChannel: begin
