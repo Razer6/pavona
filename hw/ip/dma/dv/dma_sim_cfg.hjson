@@ -94,6 +94,11 @@
       reseed: 20
     }
     {
+      name: dma_overlap
+      uvm_test_seq: dma_overlap_vseq
+      reseed: 15
+    }
+    {
       name: dma_config_lock
       uvm_test_seq: dma_config_lock_vseq
       reseed: 15

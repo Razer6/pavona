@@ -4,11 +4,15 @@
 
 module dma_cov_bind;
   bind dma dma_cov_if u_dma_cov_if (
-    .clk             (clk_i),
-    .rst_n           (rst_ni),
-    .reg2hw          (reg2hw),
-    .ctrl_state_q    (ctrl_state_q),
-    .transfer_byte_q (transfer_byte_q),
-    .transfer_width_q(transfer_width_q)
+    .clk               (clk_i),
+    .rst_n             (rst_ni),
+    .reg2hw            (reg2hw),
+    .ctrl_state_q      (ctrl_state_q),
+    .read_issue        (read_issue),
+    .write_issue       (write_issue),
+    .cross_port        (cross_port),
+    .rd_done_q         (rd_done_q),
+    .sha2_consumed_q   (sha2_consumed_q),
+    .use_inline_hashing(use_inline_hashing)
   );
 endmodule

@@ -5,11 +5,10 @@
 // Directed test for the inline-hashing deferred-wait corner.
 //
 // Performs SHA transfers whose final beat is partial (total size not a multiple of 4B) and feeds
-// the SHA engine as fast as possible (zero access/response delays) to provoke back-pressure
-// (DmaShaWait) on the beat preceding the partial final beat. That is the scenario in which the
-// within-chunk fast path must not pre-capture the next beat's byte-enables; the digest check in
-// the scoreboard catches any corruption. See dma_fsm_cg.cp_sha_wait_next_partial for the matching
-// cover point.
+// the SHA engine as fast as possible (zero access/response delays) to provoke SHA back-pressure in
+// the per-beat region (DmaReadPrime/DmaOverlap): a captured beat stalls the read side until the SHA
+// engine consumes it. The digest check in the scoreboard catches any byte-enable corruption around
+// the partial final beat. See dma_fsm_cg.cp_sha_backpressure for the matching cover point.
 class dma_hashing_partial_vseq extends dma_memory_vseq;
   `uvm_object_utils(dma_hashing_partial_vseq)
   `uvm_object_new
@@ -38,7 +37,7 @@ class dma_hashing_partial_vseq extends dma_memory_vseq;
 
   virtual task body();
     `uvm_info(`gfn, "DMA: Starting hashing partial-beat Sequence", UVM_LOW)
-    // Feed the SHA engine as fast as possible to provoke DmaShaWait back-pressure.
+    // Feed the SHA engine as fast as possible to provoke SHA back-pressure in DmaReadPrime/DmaOverlap.
     set_access_delays(0, 0);
     set_response_delays(0, 0);
     super.body();

@@ -332,19 +332,41 @@
         stage: V2
         tests: ["dma_hashing_partial"]
       }
+      {
+        name: dma_overlap
+        desc: '''
+              Directed test for the cross-port read/write overlap path.
+
+              Stimulus:
+              - Configure memory-to-memory plain copy (OpcCopy) transfers with source and destination
+                ASIDs that resolve to different host ports (OtInternalAddr vs SocControlAddr), so
+                src_port_idx != dst_port_idx and the overlap region runs.
+              - 4B transfers, moderate multi-beat sizes, zero access/response delays so the read of
+                beat i+1 overlaps the write of beat i on the two ports (DmaOverlap).
+
+              Checking:
+              - Source/destination data and addresses are checked by the existing data/address
+                scoreboard; an overlap-induced hand-off error would corrupt the copied data.
+              '''
+        stage: V2
+        tests: ["dma_overlap"]
+      }
     ]
     covergroups: [
       {
         name: dma_fsm_cg
         desc: '''
-              Cover the DMA control FSM:
-              - Every control state is visited, including the inline-hashing wait state (DmaShaWait)
-                and DmaShaFinalize.
-              - FSM transitions of the within-chunk fast path: the direct next-beat edge
-                (DmaWaitWriteResponse -> DmaSendRead) that skips DmaAddrSetup, the first-beat edge
-                (DmaAddrSetup -> DmaSendRead), and the deferred-hash edge (DmaShaWait -> DmaAddrSetup).
-              - The deferred-hash corner: waiting in DmaShaWait while the next beat is the partial
-                final beat, which stresses the byte-enable handling of the fast path.
+              Cover the DMA control FSM (read/write overlap design):
+              - Every control state is visited: DmaIdle, DmaClearIntrSrc, DmaWaitIntrSrcResponse,
+                DmaAddrSetup, DmaReadPrime, DmaOverlap, DmaLastWrite, DmaShaFinalize, DmaError.
+              - FSM transitions of the per-beat overlap region: DmaAddrSetup -> DmaReadPrime,
+                DmaReadPrime -> {DmaOverlap, DmaLastWrite}, DmaOverlap -> {DmaOverlap, DmaLastWrite},
+                DmaLastWrite -> {DmaShaFinalize, DmaIdle}, and DmaShaFinalize -> DmaIdle.
+              - Concurrent read/write overlap: read_issue and write_issue asserted in the same cycle
+                (the actual overlap), crossed with cross_port to confirm overlap only occurs on
+                cross-port copies.
+              - SHA back-pressure corner: in DmaReadPrime/DmaOverlap a captured beat awaits the SHA
+                engine consuming it (rd_done_q && !sha2_consumed_q), stalling the read side.
               '''
       }
       {
