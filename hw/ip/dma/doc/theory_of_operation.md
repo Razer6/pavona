@@ -360,7 +360,99 @@ This is achieved simply by selecting the desired algorithm in the
 [digest](registers.md#sha2_digest) from the registers interface when the
 transfer has completed.
 
+## Inline AES Encryption
+
+The DMA controller can encrypt or decrypt the data it moves on-the-fly using
+**AES-128/192/256** in **CTR** or **GCM** mode.
+This follows option 1 below (a dedicated module): the controller embeds the
+hardened `aes_core` datapath (masked cipher + CTR + GHASH) of the AES IP, so the
+operation reuses the same FI/SCA-hardened, NIST-validated engine.
+
+### Selecting the operation
+
+The cipher operation is orthogonal to the read/write/digest controls and is
+selected by two [*CONTROL*](registers.md#control) fields:
+
+- [*aes_op*](registers.md#control--aes_op): `Off`, `Enc` (encrypt), or `Dec`
+  (decrypt).
+- [*aes_mode*](registers.md#control--aes_mode): `CTR` or `GCM`.
+
+The cipher is mutually exclusive with inline hashing (`digest` must be `None`)
+and requires a read+write stream (`read_en = write_en = 1`).
+
+### Key, IV and parameters
+
+- The key is supplied either as two software shares in
+  [*KEY_SHARE0*](registers.md#key_share0)/[*KEY_SHARE1*](registers.md#key_share1)
+  (effective key = `KEY_SHARE0 ^ KEY_SHARE1`, write-only), or sideloaded from the
+  key manager when [*AES_CTRL.sideload*](registers.md#aes_ctrl--sideload) is set.
+- The key length is chosen with
+  [*AES_CTRL.key_len*](registers.md#aes_ctrl--key_len).
+- The 96-bit nonce is written to [*IV*](registers.md#iv)`[3:1]`; the counter word
+  `IV[0]` is hardware-forced to the GCM J0 low value on a fresh operation, so
+  software cannot pin the counter.
+- For GCM, associated authenticated data is written to the
+  [*AAD*](registers.md#aad) registers and its block count to
+  [*AES_CTRL.aad_blocks*](registers.md#aes_ctrl--aad_blocks); it is absorbed into
+  GHASH before the text.
+
+### Authentication tag (GCM)
+
+- On **encrypt**, the computed tag appears in [*TAG_OUT*](registers.md#tag_out)
+  and [*STATUS.tag_valid*](registers.md#status--tag_valid) is set on completion.
+- On **decrypt**, software writes the expected tag to
+  [*TAG_IN*](registers.md#tag_in) before starting. The hardware compares it with
+  a glitch-resistant, fail-closed comparison. On mismatch it raises
+  [*STATUS.tag_failed*](registers.md#status--tag_failed),
+  [*ERROR_CODE.aes_tag_error*](registers.md#error_code--aes_tag_error) and the
+  `recov_fault` alert, and **suppresses the done indication**.
+  The recomputed tag is never exposed (TAG_IN is write-only).
+
+  Because GCM is a streaming cipher, the decrypted plaintext is written to the
+  destination *before* the tag is verified. The DMA does not lock, hide, or otherwise
+  hardware-quarantine those writes. Suppressing `done` therefore does not prevent the CPU,
+  another bus master, or a peripheral from reading unauthenticated plaintext. **Every consumer
+  must remain blocked until `STATUS.tag_valid` is observed. On `STATUS.tag_failed`, software
+  must wipe the destination before it can be reused.** An integration that cannot enforce this
+  rule must not use inline GCM decrypt for security-sensitive plaintext.
+
+### Operation and constraints (v1)
+
+The cipher runs as a block-serial sub-operation: the controller gathers each
+16-byte block from four read beats, runs it through the engine, and scatters the
+result as four write beats. Consequently v1 requires:
+
+- a 4-byte transfer width and 16-byte-multiple total and chunk sizes,
+- incrementing, non-wrapping source and destination addresses,
+- non-handshake mode.
+
+Total and chunk sizes may differ. At each intermediate chunk boundary the controller reports
+`chunk_done`, clears `go` and `busy`, and waits for software to resume with `initial_transfer = 0`.
+The cipher state and configuration lock persist across this pause. Source and destination
+addresses advance by the actual chunk length; the final chunk may be shorter than the programmed
+chunk size. AAD is absorbed only once and GCM authentication occurs only at the end of the full
+message. All destination chunks remain unauthenticated until that final check succeeds.
+Abort or error clears the retained session and releases its configuration lock. A new initial
+transfer during a suspended session is rejected; software must abort before replacing it.
+The GCM text limit remains 8191 blocks across all chunks, and AAD is limited to two full blocks.
+
+Illegal combinations are rejected with `DmaOpcodeErr`/`DmaSizeErr` at
+configuration time.
+
+### Security
+
+The key/IV/AAD/tag registers are hardware-wiped (SEC_WIPE) when the operation
+ends, aborts, or errors. The masked datapath draws entropy from EDN over a
+dedicated clock domain (disable with the `SecAesMasking` parameter for
+non-production builds), and life-cycle escalation gates the engine. AES faults
+are reported through the `fatal_fault` (aes_core fatal / FSM) and `recov_fault`
+(tag mismatch / aes_core recoverable) alerts.
+
 ## Extension: Inline Operations
+
+The following captures the original design rationale for inline cryptographic
+operations; the inline AES feature above implements option 1 (a dedicated
+embedded module).
 
 In a next generation, the DMA controller can be extended to perform
 inline operations on data it is transferring. We primarily foresee

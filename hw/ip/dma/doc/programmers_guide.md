@@ -114,6 +114,39 @@ Once the transfer is complete, the computed hash digest value can be read from t
 The endianness of the resulting hash digest can be configured using the `digest_swap` bit in the [`CONTROL`](registers.md#control) register.
 Changing this bit affects the digests of subsequent DMA transfers; it does not alter the current contents of the [`SHA2_DIGEST_0-15`](registers.md#sha2_digest) registers.
 
+## Inline AES Encryption
+
+The DMA can encrypt or decrypt the moved data on-the-fly using AES-CTR or AES-GCM (see [Theory of Operation](theory_of_operation.md#inline-aes-encryption)).
+To program an inline AES transfer:
+
+1. Provide the key: write the two shares to [`KEY_SHARE0`](registers.md#key_share0)/[`KEY_SHARE1`](registers.md#key_share1) (their XOR is the key), or set [`AES_CTRL.sideload`](registers.md#aes_ctrl--sideload) to use the key-manager key.
+2. Set [`AES_CTRL.key_len`](registers.md#aes_ctrl--key_len) and, for GCM with associated data, write the [`AAD`](registers.md#aad) registers and [`AES_CTRL.aad_blocks`](registers.md#aes_ctrl--aad_blocks).
+3. Write the 96-bit nonce to [`IV`](registers.md#iv)`[3:1]` (the counter word `IV[0]` is hardware-managed).
+4. For a GCM decrypt, write the expected authentication tag to [`TAG_IN`](registers.md#tag_in).
+5. Configure the transfer as usual (source/destination addresses, sizes, 4-byte transfer width) and select the operation in [`CONTROL`](registers.md#control): `aes_op` = `Enc`/`Dec` and `aes_mode` = `CTR`/`GCM`, with `digest` = `None`. Assert `initial_transfer`.
+6. Start the transfer with `go`.
+
+The transfer must use a 4-byte transfer width, nonzero total/chunk sizes that are multiples of
+16 bytes, and incrementing non-wrapping addresses. Hardware handshake is not supported.
+The sizes may differ: a shorter final chunk transfers only the remaining bytes, and a chunk
+size greater than the total completes in one chunk.
+
+At an intermediate chunk boundary, `chunk_done` is asserted and `go` and `busy` are cleared.
+Resume by setting `go` with `initial_transfer = 0`. The key, counter, and GHASH state remain
+live, and `CFG_REGWEN` remains locked, including the AES configuration, addresses, and sizes.
+Hardware advances the addresses by the bytes moved in each chunk. AAD is processed once, and
+the GCM tag is generated or checked only after the entire message. To replace a suspended
+message, first abort it and wait for `aborted` and an unlocked `CFG_REGWEN` before reprogramming.
+Starting a new initial transfer while a message is suspended raises an opcode error and wipes
+the retained AES state. GCM supports at most 8191 text blocks (131056 bytes) per message.
+
+On completion of a GCM encrypt, read the computed tag from [`TAG_OUT`](registers.md#tag_out) once [`STATUS.tag_valid`](registers.md#status--tag_valid) is set.
+For a GCM decrypt, a tag mismatch sets [`STATUS.tag_failed`](registers.md#status--tag_failed) and [`ERROR_CODE.aes_tag_error`](registers.md#error_code--aes_tag_error), raises the `recov_fault` alert, and suppresses `done`.
+Because the plaintext is written before the tag is checked, the DMA does not provide hardware quarantine of the destination.
+Suppressing `done` does not stop the CPU, another bus master, or a peripheral from reading unauthenticated plaintext.
+Software must block every consumer until `tag_valid` is set and must wipe the destination before reuse when `tag_failed` is set.
+Do not use inline GCM decrypt for security-sensitive plaintext if the integration cannot enforce this access discipline.
+
 ## Error Condition
 
 For security reasons, the DMA controller performs extensive checking of the configuration registers before starting a transfer.
