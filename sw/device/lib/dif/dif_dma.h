@@ -61,16 +61,46 @@ typedef enum dif_dma_transaction_width {
   kDifDmaTransWidth4Bytes = 0x02,
 } dif_dma_transaction_width_t;
 
-/* Supported Opcodes by the DMA */
+/* Supported operations by the DMA.
+ *
+ * The DMA CONTROL register no longer carries a single `opcode` field. Instead it
+ * exposes three orthogonal controls: `read_en` (read from source), `write_en`
+ * (write to destination) and `digest` (inline hash selector). This enum is kept
+ * as a convenience selector: each value is decoded by the DIF into the
+ * corresponding (read_en, write_en, digest) tuple written to CONTROL.
+ *
+ * Operation -> (read_en, write_en, digest):
+ *   kDifDmaCopyOpcode      -> (1, 1, none)    copy source to destination
+ *   kDifDmaSha256Opcode    -> (1, 1, sha256)  copy + inline SHA2-256
+ *   kDifDmaSha384Opcode    -> (1, 1, sha384)  copy + inline SHA2-384
+ *   kDifDmaSha512Opcode    -> (1, 1, sha512)  copy + inline SHA2-512
+ *   kDifDmaMemsetOpcode    -> (0, 1, none)    fill destination from SRC_ADDR_LO
+ *   kDifDmaVerifySha256Opcode -> (1, 0, sha256) read-only, digest over source
+ *   kDifDmaVerifySha384Opcode -> (1, 0, sha384)
+ *   kDifDmaVerifySha512Opcode -> (1, 0, sha512)
+ *
+ * The numeric values of the legacy copy/hash entries match the previous
+ * CONTROL `opcode` encoding (Copy=0, Sha256=1, Sha384=2, Sha512=3) so callers
+ * that hardcoded those values keep mapping to the same operation.
+ */
 typedef enum dif_dma_transaction_opcode {
-  /* Simple copy from source to destination.*/
+  /* Simple copy from source to destination (read_en=1, write_en=1). */
   kDifDmaCopyOpcode = 0x00,
-  /* Inline hashing with SHA2-256.*/
+  /* Copy with inline hashing using SHA2-256. */
   kDifDmaSha256Opcode = 0x01,
-  /* Inline hashing with SHA2-384.*/
+  /* Copy with inline hashing using SHA2-384. */
   kDifDmaSha384Opcode = 0x02,
-  /* Inline hashing with SHA2-512.*/
+  /* Copy with inline hashing using SHA2-512. */
   kDifDmaSha512Opcode = 0x03,
+  /* Memset: write only (read_en=0, write_en=1). The write data is the fill
+     pattern replicated from the low 32 bits of the source address
+     (SRC_ADDR_LO), set via `transaction.source.address`. */
+  kDifDmaMemsetOpcode = 0x04,
+  /* Verify: read only with inline hashing (read_en=1, write_en=0). The digest
+     is computed over the read data; nothing is written to the destination. */
+  kDifDmaVerifySha256Opcode = 0x05,
+  kDifDmaVerifySha384Opcode = 0x06,
+  kDifDmaVerifySha512Opcode = 0x07,
 } dif_dma_transaction_opcode_t;
 
 /**
@@ -150,8 +180,14 @@ dif_result_t dif_dma_handshake_disable(const dif_dma_t *dma);
  * function `dif_dma_configure` and optionally `dif_dma_handshake_enable` can be
  * called.
  *
+ * The `opcode` selects the operation, which the DIF decodes into the CONTROL
+ * `read_en`/`write_en`/`digest` fields. For `kDifDmaMemsetOpcode` the fill
+ * pattern is taken from the configured source address (SRC_ADDR_LO), so set
+ * `transaction.source.address` to the desired fill value before calling
+ * `dif_dma_configure`.
+ *
  * @param dma A DMA Controller handle.
- * @param opcode Transaction opcode.
+ * @param opcode Transaction operation selector.
  * @return The result of the operation.
  */
 OT_WARN_UNUSED_RESULT
