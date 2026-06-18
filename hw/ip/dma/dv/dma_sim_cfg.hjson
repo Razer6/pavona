@@ -99,6 +99,16 @@
       reseed: 15
     }
     {
+      name: dma_memset
+      uvm_test_seq: dma_memset_vseq
+      reseed: 15
+    }
+    {
+      name: dma_verify
+      uvm_test_seq: dma_verify_vseq
+      reseed: 15
+    }
+    {
       name: dma_config_lock
       uvm_test_seq: dma_config_lock_vseq
       reseed: 15

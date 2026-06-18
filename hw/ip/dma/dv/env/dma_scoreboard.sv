@@ -109,6 +109,28 @@ class dma_scoreboard extends cip_base_scoreboard #(
     end
   endfunction : build_phase
 
+  // Reconstruct the DV-side operation selector from the orthogonal CONTROL fields read back from
+  // the DUT (read_en/write_en/digest), mirroring the encoding in `set_control`.
+  function opcode_e decode_opcode(bit read_en, bit write_en, bit [1:0] digest);
+    if (read_en && write_en) begin
+      case (digest)
+        2'd1:    return OpcSha256;
+        2'd2:    return OpcSha384;
+        2'd3:    return OpcSha512;
+        default: return OpcCopy;
+      endcase
+    end else if (write_en) begin
+      return OpcMemset;  // read_en=0
+    end else begin
+      // verify (write_en=0): read + hash, no write.
+      case (digest)
+        2'd2:    return OpcVerifySha384;
+        2'd3:    return OpcVerifySha512;
+        default: return OpcVerifySha256;
+      endcase
+    end
+  endfunction : decode_opcode
+
   // Look up the given address in the list of 'Clear Interrupt' addresses, returning a positive
   // index iff found.
   function int intr_addr_lookup(bit [63:0] addr);
@@ -133,7 +155,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
   // This method is common for both source and destination address.
   function void check_addr(bit [63:0]       addr,        // Observed address.
                            bit [63:0]       exp_addr,    // Expectation.
-                           bit              restricted,  // DMA-enabled range applies.
+                           bit              range_restricted,  // DMA-enabled range applies.
                            bit              fixed_addr,  // Fixed address.
                            // Expected address range for this accesses of this type.
                            bit [63:0]       range_start,
@@ -145,8 +167,8 @@ class dma_scoreboard extends cip_base_scoreboard #(
     bit [63:0] range_end = range_start + range_len;
     int idx;
 
-    `uvm_info(`gfn, $sformatf("%s access to 0x%0x, exp 0x%0x, fixed_addr %d, restricted %d",
-                              check_type, addr, exp_addr, fixed_addr, restricted), UVM_DEBUG)
+    `uvm_info(`gfn, $sformatf("%s access to 0x%0x, exp 0x%0x, fixed_addr %d, range_restricted %d",
+                              check_type, addr, exp_addr, fixed_addr, range_restricted), UVM_DEBUG)
     `uvm_info(`gfn,
               $sformatf("  (%s range is [0x%0x,0x%0x) and DMA-enabled range is [0x%0x,0x%0x))",
                         check_type, range_start, range_end,
@@ -169,7 +191,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
     end
 
     // Check that this address lies within the DMA-enabled memory range, where applicable.
-    if (restricted) begin
+    if (range_restricted) begin
       `DV_CHECK(addr >= dma_config.mem_range_base && addr < dma_config.mem_range_limit,
                 $sformatf("%s addr 0x%0x does not lie within the DMA-enabled range [0x%0x,0x%0x)",
                           check_type, addr, dma_config.mem_range_base,
@@ -182,20 +204,24 @@ class dma_scoreboard extends cip_base_scoreboard #(
                         addr, exp_addr))
   endfunction
 
-  // On-the-fly checking of write data against the pre-randomized source data
+  // On-the-fly checking of write data. For copy/hash the written bytes must match the
+  // pre-randomized source data; for memset (read_en=0) they must match the dst-keyed replication of
+  // the fill pattern held in SRC_ADDR_LO.
   function void check_write_data(string if_name, bit [63:0] a_addr, ref tl_seq_item item);
     bit [tl_agent_pkg::DataWidth-1:0] wdata = item.a_data;
     bit [31:0] offset = num_bytes_transferred;
+    bit memset = !dma_config.op_reads();
 
     `uvm_info(`gfn, $sformatf("if_name %s: write addr 0x%0x mask 0x%0x data 0x%0x", if_name,
                               a_addr, item.a_mask, item.a_data), UVM_HIGH)
 
-    // Check each of the bytes being written, Little Endian byte ordering
+    // Check each of the bytes being written, Little Endian byte ordering. `i` is the byte lane
+    // within the 32-bit bus word, which selects the replicated fill byte for memset.
     for (int i = 0; i < $bits(item.a_mask); i++) begin
       if (item.a_mask[i]) begin
-        `uvm_info(`gfn, $sformatf("src_data %0x write data 0x%0x",
-                                  cfg.src_data[offset], wdata[7:0]), UVM_DEBUG)
-        `DV_CHECK_EQ(cfg.src_data[offset], wdata[7:0])
+        bit [7:0] exp_byte = memset ? dma_config.fill_byte_for_lane(i) : cfg.src_data[offset];
+        `uvm_info(`gfn, $sformatf("exp_data %0x write data 0x%0x", exp_byte, wdata[7:0]), UVM_DEBUG)
+        `DV_CHECK_EQ(exp_byte, wdata[7:0])
         offset++;
       end
       wdata = wdata >> 8;
@@ -266,10 +292,14 @@ class dma_scoreboard extends cip_base_scoreboard #(
     // - Write transactions are to destination interface
     if (!item.is_write()) begin // read transaction
       // Does the DMA-enabled memory range apply to this type of access?
-      bit restricted = dma_config.mem_range_valid && (dma_config.src_asid == OtInternalAddr &&
+      bit range_restricted = dma_config.mem_range_valid && (dma_config.src_asid == OtInternalAddr &&
                                                       dma_config.dst_asid != OtInternalAddr);
       bit fixed_addr = dma_config.src_chunk_wrap & !dma_config.src_addr_inc;
       bit [31:0] memory_range;
+      // Memset (read_en=0) must not generate any source read traffic.
+      `DV_CHECK(dma_config.op_reads(),
+                $sformatf("Unexpected source read on %s during a no-read (memset) operation",
+                          if_name))
       // Check if the transaction has correct mask
       `DV_CHECK_EQ($countones(item.a_mask), 4) // Always 4B
       // Check source ASID for read transaction
@@ -297,7 +327,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
       end
 
       // Validate the read address for this source access.
-      check_addr(a_addr, exp_src_addr, restricted, fixed_addr, dma_config.src_addr, memory_range,
+      check_addr(a_addr, exp_src_addr, range_restricted, fixed_addr, dma_config.src_addr, memory_range,
                  dma_config, "Source");
 
       // Push addr item to source queue
@@ -317,7 +347,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
                                   dma_config, "Source");
     end else begin // Write transaction
       // Does the DMA-enabled memory range apply to this type of access?
-      bit restricted = dma_config.mem_range_valid && (dma_config.dst_asid == OtInternalAddr &&
+      bit range_restricted = dma_config.mem_range_valid && (dma_config.dst_asid == OtInternalAddr &&
                                                       dma_config.src_asid != OtInternalAddr);
 
       bit fixed_addr = dma_config.dst_chunk_wrap & !dma_config.dst_addr_inc;
@@ -348,8 +378,13 @@ class dma_scoreboard extends cip_base_scoreboard #(
         uint transfer_bytes_left;
         uint remaining_bytes;
 
+        // Verify (write_en=0) must not generate any destination write traffic.
+        `DV_CHECK(dma_config.op_writes(),
+                  $sformatf("Unexpected destination write on %s during a no-write (verify) operation",
+                            if_name))
+
         // Validate the write address for this destination access.
-        check_addr(a_addr, exp_dst_addr, restricted, fixed_addr, dma_config.dst_addr, memory_range,
+        check_addr(a_addr, exp_dst_addr, range_restricted, fixed_addr, dma_config.dst_addr, memory_range,
                    dma_config, "Destination");
 
         // Note: this will only work because we KNOW that we don't reprogram the `chunk_data_size`
@@ -529,7 +564,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
       `uvm_info(`gfn, "Bus error detected", UVM_MEDIUM)
       predict_interrupts(BusErrorToIntrLatency, 1 << IntrDmaError, intr_enable);
       intr_state_hw[IntrDmaError] = 1'b1;
-    end else if (got_dest_item) begin
+    end else if (got_dest_item && dma_config.op_writes()) begin
       // Is this the final destination write?
       //
       // Note: we must perform this on the D channel (write response) because an error may occur
@@ -543,6 +578,20 @@ class dma_scoreboard extends cip_base_scoreboard #(
           intr_state_hw[IntrDmaDone] = 1'b1;
         end else begin
           `uvm_info(`gfn, "Chunk writing completed", UVM_MEDIUM)
+          predict_interrupts(WriteToDoneLatency, 1 << IntrDmaChunkDone, intr_enable);
+          intr_state_hw[IntrDmaChunkDone] = 1'b1;
+        end
+      end
+    end else if (got_source_item && !dma_config.op_writes()) begin
+      // Verify (write_en=0) is read-driven and has no destination writes, so completion is signaled
+      // off the final read response instead.
+      if (num_bytes_read >= exp_bytes_transferred) begin
+        if (num_bytes_read >= dma_config.total_data_size) begin
+          `uvm_info(`gfn, "Final read completed (verify)", UVM_MEDIUM)
+          predict_interrupts(WriteToDoneLatency, 1 << IntrDmaDone, intr_enable);
+          intr_state_hw[IntrDmaDone] = 1'b1;
+        end else begin
+          `uvm_info(`gfn, "Chunk reading completed (verify)", UVM_MEDIUM)
           predict_interrupts(WriteToDoneLatency, 1 << IntrDmaChunkDone, intr_enable);
           intr_state_hw[IntrDmaChunkDone] = 1'b1;
         end
@@ -886,6 +935,28 @@ class dma_scoreboard extends cip_base_scoreboard #(
     end
   endfunction
 
+  // Utility function to check the destination memory of a memset against the replicated fill
+  // pattern. The expected byte at each destination address is keyed by that address' low bits, per
+  // the dst-keyed replication in the DUT (little-endian fill pattern).
+  function void check_memset_data(ref dma_seq_item dma_config, bit [63:0] dst_addr,
+                                  bit [31:0] dst_offset, bit [31:0] size);
+    bit dst_fifo = dma_config.get_write_fifo_en();
+    `uvm_info(`gfn, $sformatf("Checking memset output [0x%0x,0x%0x) against fill pattern 0x%0x",
+                              dst_addr, dst_addr + size, dma_config.fill_value()), UVM_MEDIUM)
+    for (int i = 0; i < size; i++) begin
+      // Memory dst: each address gets the fill byte for its own low bits. FIFO dst (fixed
+      // address): the pattern bytes arrive in pop order, cycling through the lanes per beat.
+      bit [1:0] lane = dst_fifo ? 2'(i % dma_config.txn_bytes()) : dst_addr[1:0];
+      bit [7:0] exp_data = dma_config.fill_byte_for_lane(lane);
+      bit [7:0] dst_data = dst_fifo ? get_fifo_data(dma_config.dst_asid, dst_addr)
+                                    : get_model_data(dma_config.dst_asid, dst_addr);
+      `DV_CHECK_EQ(exp_data, dst_data,
+                   $sformatf("memset dst_addr = %0x exp = %0x got = %0x", dst_addr, exp_data,
+                             dst_data))
+      if (!dst_fifo) dst_addr++;
+    end
+  endfunction
+
   // Return the index that a register name refers to e.g. "intr_src_addr_1" yields 1
   function uint get_index_from_reg_name(string reg_name);
     int str_len = reg_name.len();
@@ -1137,9 +1208,13 @@ class dma_scoreboard extends cip_base_scoreboard #(
           // that no more transactions occur after an error, _for that transfer_.
           dst_tl_error_detected = 1'b0;
           src_tl_error_detected = 1'b0;
-          // Get mirrored field value and cast to associated enum in dma_config
-          dma_config.opcode = opcode_e'(`gmv(ral.control.opcode));
-          `uvm_info(`gfn, $sformatf("Got opcode = %s", dma_config.opcode.name()), UVM_HIGH)
+          // Reconstruct the DV-side operation selector from the orthogonal CONTROL fields.
+          dma_config.opcode = decode_opcode(`gmv(ral.control.read_en),
+                                            `gmv(ral.control.write_en),
+                                            `gmv(ral.control.digest));
+          `uvm_info(`gfn, $sformatf("Got opcode = %s (read_en=%0b write_en=%0b digest=%0d)",
+                                    dma_config.opcode.name(), `gmv(ral.control.read_en),
+                                    `gmv(ral.control.write_en), `gmv(ral.control.digest)), UVM_HIGH)
           // Get handshake mode enable bit
           dma_config.handshake = `gmv(ral.control.hardware_handshake_enable);
           `uvm_info(`gfn, $sformatf("Got hardware_handshake_mode = %0b", dma_config.handshake),
@@ -1258,10 +1333,16 @@ class dma_scoreboard extends cip_base_scoreboard #(
             !(aborted || error) && // no abort or error detected
            !(src_tl_error_detected || dst_tl_error_detected))
         begin // no TL error
-          // Check if number of bytes transferred is as expected at this point in the transfer
-          `DV_CHECK_EQ(num_bytes_transferred, exp_bytes_transferred,
+          // Check if number of bytes transferred is as expected at this point in the transfer.
+          // Verify (write_en=0) is read-driven, so its progress is tracked by the read counter.
+          // Note: the TL-UL host adapter always reads full bus words, so num_bytes_read may
+          // exceed total_data_size by up to (word_size - 1) bytes on the final beat; cap it.
+          uint act_bytes = dma_config.op_writes() ? num_bytes_transferred : num_bytes_read;
+          if (!dma_config.op_writes() && act_bytes > dma_config.total_data_size)
+            act_bytes = dma_config.total_data_size;
+          `DV_CHECK_EQ(act_bytes, exp_bytes_transferred,
                        $sformatf("act_data_size: %0d exp_data_size: %0d",
-                                 num_bytes_transferred, exp_bytes_transferred))
+                                 act_bytes, exp_bytes_transferred))
         end
         // STATUS.aborted should only be true if we requested an Abort.
         // However, the transfer may just have completed successfully even if we did request an
@@ -1288,18 +1369,23 @@ class dma_scoreboard extends cip_base_scoreboard #(
         // Check results after each chunk of the transfer (memory-to-memory) or after the complete
         // transfer (handshaking mode).
         if (dma_config.is_valid_config && (done || chunk_done)) begin
-          if (num_bytes_transferred >= dma_config.total_data_size) begin
-            // SHA digest (expecting zeros if unused)
-            // When using inline hashing, sha2_digest_valid must be raised at the end
-            if (dma_config.opcode inside {OpcSha256, OpcSha384, OpcSha512}) begin
+          // Verify (write_en=0) is read-driven and produces no destination writes, so completion
+          // is tracked by the read counter rather than the write counter.
+          bit verify = !dma_config.op_writes();
+          uint progressed = verify ? num_bytes_read : num_bytes_transferred;
+
+          if (progressed >= dma_config.total_data_size) begin
+            // When using inline hashing (copy+hash or verify), sha2_digest_valid must be raised at
+            // the end; otherwise the digest registers are expected to read back as zero.
+            if (dma_config.op_has_digest()) begin
               `DV_CHECK_EQ(sha2_digest_valid, 1, "Digest valid bit not set when done")
             end
             predict_digest(dma_config);
           end
 
           // Has all of the output already been checked?
-          if (num_bytes_checked < num_bytes_transferred) begin
-            bit [31:0] check_bytes = num_bytes_transferred - num_bytes_checked;
+          if (num_bytes_checked < progressed) begin
+            bit [31:0] check_bytes = progressed - num_bytes_checked;
             bit [63:0] dst_addr = dma_config.dst_addr;
             bit [63:0] src_addr = dma_config.src_addr;
 
@@ -1310,10 +1396,18 @@ class dma_scoreboard extends cip_base_scoreboard #(
               dst_addr += num_bytes_checked;
             end
 
+            if (verify) begin
+              // No destination data to check; the digest check above covers the read bytes.
+              num_bytes_checked += check_bytes;
+            end else if (!dma_config.op_reads()) begin
+              // Memset: the destination memory must hold the replicated fill pattern.
+              check_memset_data(dma_config, dst_addr, num_bytes_checked, check_bytes);
+              num_bytes_checked += check_bytes;
             // TODO: we are still unable to check the final output data if in hardware-handshaking
             // mode and the destination chunks overlap but auto-increment _is_ used, i.e. it's not
             // using a FIFO model.
-            if (dma_config.handshake && dma_config.dst_chunk_wrap && dma_config.dst_addr_inc) begin
+            end else if (dma_config.handshake && dma_config.dst_chunk_wrap &&
+                         dma_config.dst_addr_inc) begin
               `uvm_info(`gfn, "Unable to check output data because of chunks overlapping", UVM_LOW)
             end else begin
               check_data(dma_config, src_addr, dst_addr, num_bytes_checked, check_bytes);
@@ -1472,20 +1566,21 @@ class dma_scoreboard extends cip_base_scoreboard #(
   // query the SHA model to get expected digest
   // update predicted digest to ral mirrored value
   virtual function void predict_digest(ref dma_seq_item dma_config);
+    // Copy+hash and verify both hash exactly the source data that was read.
     case (dma_config.opcode)
-      OpcSha256: begin
+      OpcSha256, OpcVerifySha256: begin
         cryptoc_dpi_pkg::sv_dpi_get_sha256_digest(cfg.src_data, exp_digest[0:7]);
         exp_digest[8:15] = '{default:0};
       end
-      OpcSha384: begin
+      OpcSha384, OpcVerifySha384: begin
         cryptoc_dpi_pkg::sv_dpi_get_sha384_digest(cfg.src_data, exp_digest[0:11]);
         exp_digest[12:15] = '{default:0};
       end
-      OpcSha512: begin
+      OpcSha512, OpcVerifySha512: begin
         cryptoc_dpi_pkg::sv_dpi_get_sha512_digest(cfg.src_data, exp_digest[0:15]);
       end
       default: begin
-        // When not using inline hashing mode
+        // When not using inline hashing mode (copy, memset)
         exp_digest = '{default:0};
       end
     endcase
