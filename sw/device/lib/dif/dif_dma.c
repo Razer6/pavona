@@ -97,14 +97,95 @@ dif_result_t dif_dma_handshake_disable(const dif_dma_t *dma) {
   return kDifOk;
 }
 
+// Decode an operation selector into the orthogonal CONTROL fields.
+//
+// Maps each `dif_dma_transaction_opcode_t` value to (read_en, write_en,
+// digest) where `digest` is one of the DMA_CONTROL_DIGEST_VALUE_* encodings.
+typedef struct dif_dma_control_fields {
+  bool read_en;
+  bool write_en;
+  uint32_t digest;
+} dif_dma_control_fields_t;
+
+static dif_result_t dif_dma_decode_opcode(dif_dma_transaction_opcode_t opcode,
+                                          dif_dma_control_fields_t *fields) {
+  switch (opcode) {
+    case kDifDmaCopyOpcode:
+      *fields = (dif_dma_control_fields_t){
+          true, true, DMA_CONTROL_DIGEST_VALUE_NONE};
+      break;
+    case kDifDmaSha256Opcode:
+      *fields = (dif_dma_control_fields_t){
+          true, true, DMA_CONTROL_DIGEST_VALUE_SHA256};
+      break;
+    case kDifDmaSha384Opcode:
+      *fields = (dif_dma_control_fields_t){
+          true, true, DMA_CONTROL_DIGEST_VALUE_SHA384};
+      break;
+    case kDifDmaSha512Opcode:
+      *fields = (dif_dma_control_fields_t){
+          true, true, DMA_CONTROL_DIGEST_VALUE_SHA512};
+      break;
+    case kDifDmaMemsetOpcode:
+      *fields = (dif_dma_control_fields_t){
+          false, true, DMA_CONTROL_DIGEST_VALUE_NONE};
+      break;
+    case kDifDmaVerifySha256Opcode:
+      *fields = (dif_dma_control_fields_t){
+          true, false, DMA_CONTROL_DIGEST_VALUE_SHA256};
+      break;
+    case kDifDmaVerifySha384Opcode:
+      *fields = (dif_dma_control_fields_t){
+          true, false, DMA_CONTROL_DIGEST_VALUE_SHA384};
+      break;
+    case kDifDmaVerifySha512Opcode:
+      *fields = (dif_dma_control_fields_t){
+          true, false, DMA_CONTROL_DIGEST_VALUE_SHA512};
+      break;
+    default:
+      return kDifBadArg;
+  }
+  return kDifOk;
+}
+
+// Map an operation selector to its digest length in 32-bit words (0 if the
+// operation does not compute a digest).
+static dif_result_t dif_dma_decode_digest_words(
+    dif_dma_transaction_opcode_t opcode, uint32_t *digest_len) {
+  dif_dma_control_fields_t fields;
+  DIF_RETURN_IF_ERROR(dif_dma_decode_opcode(opcode, &fields));
+  switch (fields.digest) {
+    case DMA_CONTROL_DIGEST_VALUE_NONE:
+      *digest_len = 0;
+      break;
+    case DMA_CONTROL_DIGEST_VALUE_SHA256:
+      *digest_len = 8;
+      break;
+    case DMA_CONTROL_DIGEST_VALUE_SHA384:
+      *digest_len = 12;
+      break;
+    case DMA_CONTROL_DIGEST_VALUE_SHA512:
+      *digest_len = 16;
+      break;
+    default:
+      return kDifBadArg;
+  }
+  return kDifOk;
+}
+
 dif_result_t dif_dma_start(const dif_dma_t *dma,
                            dif_dma_transaction_opcode_t opcode) {
   if (dma == NULL) {
     return kDifBadArg;
   }
 
+  dif_dma_control_fields_t fields;
+  DIF_RETURN_IF_ERROR(dif_dma_decode_opcode(opcode, &fields));
+
   uint32_t reg = mmio_region_read32(dma->base_addr, DMA_CONTROL_REG_OFFSET);
-  reg = bitfield_field32_write(reg, DMA_CONTROL_OPCODE_FIELD, opcode);
+  reg = bitfield_bit32_write(reg, DMA_CONTROL_READ_EN_BIT, fields.read_en);
+  reg = bitfield_bit32_write(reg, DMA_CONTROL_WRITE_EN_BIT, fields.write_en);
+  reg = bitfield_field32_write(reg, DMA_CONTROL_DIGEST_FIELD, fields.digest);
   reg = bitfield_bit32_write(reg, DMA_CONTROL_GO_BIT, 1);
   reg = bitfield_bit32_write(reg, DMA_CONTROL_INITIAL_TRANSFER_BIT, 1);
   mmio_region_write32(dma->base_addr, DMA_CONTROL_REG_OFFSET, reg);
@@ -244,20 +325,13 @@ dif_result_t dif_dma_get_digest_length(dif_dma_transaction_opcode_t opcode,
   if (digest_len == NULL) {
     return kDifBadArg;
   }
-  switch (opcode) {
-    case kDifDmaSha256Opcode:
-      *digest_len = 8;
-      break;
-    case kDifDmaSha384Opcode:
-      *digest_len = 12;
-      break;
-    case kDifDmaSha512Opcode:
-      *digest_len = 16;
-      break;
-    default:
-      return kDifBadArg;
-      break;
+  uint32_t words = 0;
+  DIF_RETURN_IF_ERROR(dif_dma_decode_digest_words(opcode, &words));
+  // Operations without a digest (e.g. copy, memset) have no length to report.
+  if (words == 0) {
+    return kDifBadArg;
   }
+  *digest_len = words;
   return kDifOk;
 }
 
