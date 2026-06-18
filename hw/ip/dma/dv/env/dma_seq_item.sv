@@ -46,6 +46,10 @@ class dma_seq_item extends uvm_sequence_item;
   rand bit [31:0] chunk_data_size;
   rand mubi4_t range_regwen;
   rand opcode_e opcode;
+  // Captured by the scoreboard at transfer start: this is an inline-AES operation (CONTROL.aes_op
+  // != Off). The scoreboard skips its copy/memset data comparison for AES (the directed AES
+  // sequence self-checks the ciphertext/plaintext and tag against the KAT).
+  bit is_aes;
   rand dma_transfer_width_e per_transfer_width;
   rand asid_encoding_e src_asid;
   rand asid_encoding_e dst_asid;

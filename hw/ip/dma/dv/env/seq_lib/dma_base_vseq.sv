@@ -352,6 +352,28 @@ class dma_base_vseq extends cip_base_vseq #(
                               transfer_width.name()), UVM_HIGH)
   endtask : set_transfer_width
 
+  // Program the inline-AES key/IV/AAD CSRs and AES_CTRL. key_len is the one-hot aes_pkg::key_len_e
+  // value (4 = AES-256, 1 = AES-128); sideload selects the keymgr key (0 = CSR key shares).
+  task program_aes_config(bit [31:0] key0[8], bit [31:0] key1[8], bit [31:0] iv[4],
+                          bit [31:0] aad[8], int aad_blocks, bit [2:0] key_len, bit sideload);
+    foreach (key0[i]) csr_wr(ral.key_share0[i], key0[i]);
+    foreach (key1[i]) csr_wr(ral.key_share1[i], key1[i]);
+    foreach (iv[i])   csr_wr(ral.iv[i], iv[i]);
+    for (int i = 0; i < aad_blocks * 4; i++) begin
+      csr_wr(ral.aad[i], aad[i]);
+    end
+    ral.aes_ctrl.key_len.set(key_len);
+    ral.aes_ctrl.sideload.set(sideload);
+    ral.aes_ctrl.prng_reseed_rate.set(3'd1); // PER_1
+    ral.aes_ctrl.aad_blocks.set(aad_blocks[3:0]);
+    csr_update(ral.aes_ctrl);
+  endtask : program_aes_config
+
+  // Program the expected GCM tag for a decrypt (TAG_IN, write-only).
+  task program_aes_tag_in(bit [31:0] tag[4]);
+    foreach (tag[i]) csr_wr(ral.tag_in[i], tag[i]);
+  endtask : program_aes_tag_in
+
   // Task: Set handshake interrupt register
   task set_handshake_intr_regs(ref dma_seq_item dma_config);
     `uvm_info(`gfn, "Set DMA Handshake mode interrupt registers", UVM_HIGH)
@@ -636,6 +658,8 @@ class dma_base_vseq extends cip_base_vseq #(
     data = get_csr_val_with_updated_field(ral.control.read_en, data, opcode_read_en(opcode));
     data = get_csr_val_with_updated_field(ral.control.write_en, data, opcode_write_en(opcode));
     data = get_csr_val_with_updated_field(ral.control.digest, data, opcode_digest(opcode));
+    data = get_csr_val_with_updated_field(ral.control.aes_op, data, opcode_aes_op(opcode));
+    data = get_csr_val_with_updated_field(ral.control.aes_mode, data, opcode_aes_mode(opcode));
     data = get_csr_val_with_updated_field(ral.control.initial_transfer, data, initial_transfer);
     data = get_csr_val_with_updated_field(ral.control.hardware_handshake_enable, data, handshake);
     data = get_csr_val_with_updated_field(ral.control.abort, data, abort_pending);
