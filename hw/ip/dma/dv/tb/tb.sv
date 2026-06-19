@@ -75,6 +75,36 @@ module tb;
 
   `DV_ALERT_IF_CONNECT()
 
+  // ---- Inline-AES inter-signals ----
+  // EDN runs on the main clock for DV (the wrapper's clk_edn CDC is still exercised).
+  wire clk_edn   = clk;
+  wire rst_edn_n = rst_n;
+  edn_pkg::edn_req_t aes_edn_req;
+  edn_pkg::edn_rsp_t aes_edn_rsp;
+  // Always-grant entropy stub: ack follows req with a one-cycle delay so the prim_sync_reqack_data
+  // NRZ handshake protocol sees clean edges (combinational ack creates issues with the two-phase
+  // NRZ FSM). The data advances each cycle so the masking PRNG gets varied entropy.
+  logic [edn_pkg::ENDPOINT_BUS_WIDTH-1:0] edn_bus_q;
+  logic edn_ack_q;
+  always_ff @(posedge clk_edn or negedge rst_edn_n) begin
+    if (!rst_edn_n) begin
+      edn_bus_q <= 32'h1234_5678;
+      edn_ack_q <= 1'b0;
+    end else begin
+      edn_bus_q <= edn_bus_q + 32'h9e37_79b9;
+      edn_ack_q <= aes_edn_req.edn_req;
+    end
+  end
+  assign aes_edn_rsp.edn_ack  = edn_ack_q;
+  assign aes_edn_rsp.edn_fips = 1'b1;
+  assign aes_edn_rsp.edn_bus  = edn_bus_q;
+
+  // Known keymgr sideload key (shared with the env via dma_env_pkg for prediction).
+  keymgr_pkg::hw_key_req_t aes_keymgr_key;
+  assign aes_keymgr_key.valid  = 1'b1;
+  assign aes_keymgr_key.key[0] = dma_env_pkg::DmaSideloadKeyShare0;
+  assign aes_keymgr_key.key[1] = dma_env_pkg::DmaSideloadKeyShare1;
+
   // Instantiate DUT
   dma #(
     .EnableDataIntgGen (1)
@@ -96,7 +126,14 @@ module tb;
     .host32_tl_h_o (host32_tl_h_o),
     .host32_tl_h_i (host32_tl_h_i),
     .host64_h2d_o (host64_h2d_o),
-    .host64_d2h_i (host64_d2h_i)
+    .host64_d2h_i (host64_d2h_i),
+    // Inline-AES inter-signals.
+    .clk_edn_i (clk_edn),
+    .rst_edn_ni (rst_edn_n),
+    .edn_o (aes_edn_req),
+    .edn_i (aes_edn_rsp),
+    .keymgr_key_i (aes_keymgr_key),
+    .lc_escalate_en_i (lc_ctrl_pkg::Off)
   );
 
   // Publish each host-port interface keyed by global port index `p`, matching the agent
@@ -104,6 +141,10 @@ module tb;
   initial begin
     clk_rst_if.set_active();
     dma_intf.init();
+
+    // The EDN stub uses clk_edn = clk (same clock domain). Disable the CDC timing assertions
+    // in the prim_sync_reqack_data instance on the EDN path, which assumes asynchronous clocks.
+    $assertoff(0, dut.u_dma_aes.u_prim_sync_reqack_data);
 
     // CSR (RAL) agent and common interfaces.
     uvm_config_db#(virtual tl_if)::set(null, "*.env.m_tl_agent_dma_reg_block*", "vif", tl_if);

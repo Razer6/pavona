@@ -21,6 +21,14 @@ package dma_env_pkg;
   import tlul_pkg::*;
   import aes_pkg::*;
   import aes_model_dpi_pkg::*;
+  import keymgr_pkg::*;
+
+  // Fixed keymgr sideload key driven into the DUT by the testbench and used by the env to predict
+  // the sideload-key path (the effective key is share0 ^ share1).
+  parameter bit [keymgr_pkg::KeyWidth-1:0] DmaSideloadKeyShare0 =
+      256'h0f0e0d0c_0b0a0908_07060504_03020100_1f1e1d1c_1b1a1918_17161514_13121110;
+  parameter bit [keymgr_pkg::KeyWidth-1:0] DmaSideloadKeyShare1 =
+      256'hf0f1f2f3_f4f5f6f7_f8f9fafb_fcfdfeff_e0e1e2e3_e4e5e6e7_e8e9eaeb_ecedeeef;
 
   // macro includes
   `include "uvm_macros.svh"
