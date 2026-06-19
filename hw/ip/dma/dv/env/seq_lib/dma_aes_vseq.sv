@@ -104,7 +104,7 @@ class dma_aes_vseq extends dma_base_vseq;
     set_transfer_width(DmaXfer4BperTxn);
     set_dma_enabled_memory_range(RangeBase, RangeLim, 1'b1, MuBi4True);
     program_aes_config(cfg.aes_key0, cfg.aes_key1, cfg.aes_iv, cfg.aes_aad,
-                       cfg.aes_aad_blocks, cfg.aes_key_len, 1'b0);
+                       cfg.aes_aad_blocks, cfg.aes_key_len, cfg.aes_sideload);
     if (dec) program_aes_tag_in(cfg.aes_tag_in);
     start_device(c);
     set_control(op, .initial_transfer(1'b1), .handshake(1'b0), .go(1'b1));
@@ -172,15 +172,25 @@ class dma_aes_vseq extends dma_base_vseq;
         chunk_blocks = $urandom_range(1, n_blocks + 2);
       end
 
-      // Randomize the config and publish it.
-      foreach (cfg.aes_key0[w]) cfg.aes_key0[w] = $urandom;
-      foreach (cfg.aes_key1[w]) cfg.aes_key1[w] = $urandom;
+      // Randomize the config and publish it. key_len: AES-128/192/256 (one-hot).
+      cfg.aes_key_len = (1 << $urandom_range(0, 2));
+      cfg.aes_sideload = $urandom_range(0, 1);
+      if (cfg.aes_sideload) begin
+        // Sideload: the effective key is the keymgr key driven by the tb; mirror it into cfg so the
+        // scoreboard predicts with the same key. The CSR shares are written but ignored by the DUT.
+        for (int w = 0; w < 8; w++) begin
+          cfg.aes_key0[w] = DmaSideloadKeyShare0[w*32 +: 32];
+          cfg.aes_key1[w] = DmaSideloadKeyShare1[w*32 +: 32];
+        end
+      end else begin
+        foreach (cfg.aes_key0[w]) cfg.aes_key0[w] = $urandom;
+        foreach (cfg.aes_key1[w]) cfg.aes_key1[w] = $urandom;
+      end
       foreach (cfg.aes_iv[w])   cfg.aes_iv[w]   = $urandom;
       // GCM: the AES core ignores the software-supplied IV[3] (counter word) and initializes it
       // internally during GCM_INIT. Zero it so the prediction matches the DUT.
       if (gcm) cfg.aes_iv[3] = 32'h0;
       foreach (cfg.aes_aad[w])  cfg.aes_aad[w]  = $urandom;
-      cfg.aes_key_len   = 3'b001;          // AES-128 (192/256 + sideload are tracked follow-ups)
       cfg.aes_aad_blocks = aad_blocks;
       cfg.aes_mode_gcm  = gcm;
       cfg.aes_tag_in    = '{default:0};

@@ -229,6 +229,10 @@ class dma_scoreboard extends cip_base_scoreboard #(
                     cfg.src_data, aad_b, tag_in, aes_pred_data, pred_tag, aes_pred_res);
     `uvm_info(`gfn, $sformatf("AES predict: mode=%s dec=%0b res=%0d bytes=%0d", mode.name(),
                               cfg.aes_decrypt, aes_pred_res, aes_pred_data.size()), UVM_MEDIUM)
+    if (cfg.en_cov) begin
+      cov.aes_cg.sample(cfg.aes_mode_gcm, cfg.aes_decrypt, cfg.aes_key_len, cfg.aes_aad_blocks,
+                        cfg.aes_sideload);
+    end
   endfunction
 
   // On-the-fly checking of write data. For copy/hash the written bytes must match the

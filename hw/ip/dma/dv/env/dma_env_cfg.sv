@@ -50,6 +50,7 @@ class dma_env_cfg extends cip_base_env_cfg #(.RAL_T(dma_reg_block));
   bit [3:0]  aes_aad_blocks;
   bit        aes_mode_gcm;          // 0 = CTR, 1 = GCM
   bit        aes_decrypt;
+  bit        aes_sideload;          // 1 = key from the keymgr sideload interface
   // Enables the scoreboard's AES reference prediction + data check. The randomized AES vseq sets
   // this (and publishes the config above); the directed KAT smoke leaves it 0 and self-checks.
   bit        aes_scb_predict;

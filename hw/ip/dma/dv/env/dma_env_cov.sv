@@ -108,6 +108,18 @@ covergroup dma_config_cg with function sample(dma_seq_item dma_config,
   cp_initial_transfer: coverpoint initial_transfer;
 
   cp_opcode: coverpoint dma_config.opcode;
+  cp_aes_chunk_relation: coverpoint
+      (dma_config.chunk_data_size < dma_config.total_data_size ? 0 :
+       dma_config.chunk_data_size == dma_config.total_data_size ? 1 : 2)
+      iff (dma_config.is_aes) {
+    bins multiple_chunks = {0};
+    bins equal_sizes = {1};
+    bins oversized_chunk = {2};
+  }
+  cp_aes_short_final_chunk: coverpoint
+      (dma_config.chunk_data_size != 0 &&
+       (dma_config.total_data_size % dma_config.chunk_data_size) != 0)
+      iff (dma_config.is_aes);
 
   cr_src_addr_X_src_asid: cross
       cp_src_addr,
@@ -297,6 +309,31 @@ covergroup dma_intr_src_cg with function sample(
 
 endgroup
 
+// Inline-AES configuration coverage (sampled per AES transfer by the predicting scoreboard).
+covergroup dma_aes_cg with function sample(
+  bit gcm, bit decrypt, bit [2:0] key_len, bit [3:0] aad_blocks, bit sideload);
+  option.per_instance = 1;
+  option.name = "dma_aes_cg";
+
+  cp_mode: coverpoint gcm { bins ctr = {0}; bins gcm = {1}; }
+  cp_dir:  coverpoint decrypt { bins enc = {0}; bins dec = {1}; }
+  cp_key_len: coverpoint key_len {
+    bins aes128 = {3'b001};
+    bins aes192 = {3'b010};
+    bins aes256 = {3'b100};
+  }
+  cp_aad: coverpoint aad_blocks {
+    bins none = {0};
+    bins one  = {1};
+    bins two  = {2};
+  }
+  cp_sideload: coverpoint sideload;
+
+  cr_mode_dir_keylen: cross cp_mode, cp_dir, cp_key_len;
+  cr_mode_aad:        cross cp_mode, cp_aad;
+  cr_keylen_sideload: cross cp_key_len, cp_sideload;
+endgroup
+
 class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
   `uvm_component_utils(dma_env_cov)
 
@@ -307,6 +344,7 @@ class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
   dma_interrupt_cg interrupt_cg;
   dma_clear_asid_cg clear_asid_cg;
   dma_intr_src_cg intr_src_cg;
+  dma_aes_cg aes_cg;
 
   function new(string name, uvm_component parent);
     super.new(name, parent);
@@ -317,6 +355,7 @@ class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
     interrupt_cg = new();
     clear_asid_cg = new();
     intr_src_cg = new();
+    aes_cg = new();
   endfunction: new
 
 endclass
