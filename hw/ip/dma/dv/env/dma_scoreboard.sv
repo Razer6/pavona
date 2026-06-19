@@ -68,6 +68,14 @@ class dma_scoreboard extends cip_base_scoreboard #(
   bit [31:0] clear_intr_src;
   bit [TL_DW-1:0] exp_digest[16];
 
+  // Inline-AES per-transfer reference prediction (computed at transfer start from the AES config the
+  // vseq published into `cfg` - the key/IV/AAD are `wo`/HW-clobbered, so they are not read from the
+  // RAL mirror). aes_pred_data is the predicted destination (ciphertext/plaintext); aes_pred_res<0
+  // marks an expected decrypt tag mismatch (the destination is then poisoned and not data-checked;
+  // the vseq checks TAG_OUT and the tag_failed/done status).
+  bit [7:0] aes_pred_data[];
+  int       aes_pred_res;
+
   // Allow up to this number of clock cycles from CSR modification until interrupt signal change;
   // a change in the `control` register can lead to a change in the clock gate, and then delays
   // through the register interface and `prim_intr_hw` modules.
@@ -204,17 +212,38 @@ class dma_scoreboard extends cip_base_scoreboard #(
                         addr, exp_addr))
   endfunction
 
+  // Predict the inline-AES destination (and decrypt tag-verify result) via the AES model DPI, using
+  // the config the vseq published into `cfg` and the source bytes in `cfg.src_data`. Called at
+  // transfer start. aes_pred_res < 0 means an expected decrypt tag mismatch.
+  function void predict_aes();
+    bit [7:0][31:0]     key;
+    bit [3:0][31:0]     iv, tag_in, pred_tag;
+    bit [7:0]           aad_b[];
+    aes_pkg::aes_mode_e mode = cfg.aes_mode_gcm ? aes_pkg::AES_GCM : aes_pkg::AES_CTR;
+    for (int w = 0; w < 8; w++) key[w]    = cfg.aes_key0[w] ^ cfg.aes_key1[w];
+    for (int w = 0; w < 4; w++) iv[w]     = cfg.aes_iv[w];
+    for (int w = 0; w < 4; w++) tag_in[w] = cfg.aes_tag_in[w];
+    aad_b = new[cfg.aes_aad_blocks * 16];
+    for (int b = 0; b < aad_b.size(); b++) aad_b[b] = cfg.aes_aad[b/4][(b%4)*8 +: 8];
+    dma_aes_predict(cfg.ref_model, cfg.aes_decrypt, mode, key, cfg.aes_key_len, iv,
+                    cfg.src_data, aad_b, tag_in, aes_pred_data, pred_tag, aes_pred_res);
+    `uvm_info(`gfn, $sformatf("AES predict: mode=%s dec=%0b res=%0d bytes=%0d", mode.name(),
+                              cfg.aes_decrypt, aes_pred_res, aes_pred_data.size()), UVM_MEDIUM)
+  endfunction
+
   // On-the-fly checking of write data. For copy/hash the written bytes must match the
-  // pre-randomized source data; for memset (read_en=0) they must match the dst-keyed replication of
-  // the fill pattern held in SRC_ADDR_LO.
+  // pre-randomized source data; for memset (read_en=0) the dst-keyed fill pattern; for inline AES
+  // the DPI-predicted ciphertext/plaintext (aes_pred_data).
   function void check_write_data(string if_name, bit [63:0] a_addr, ref tl_seq_item item);
     bit [tl_agent_pkg::DataWidth-1:0] wdata = item.a_data;
     bit [31:0] offset = num_bytes_transferred;
     bit memset = !dma_config.op_reads();
 
-    // Inline AES rewrites the moved data (ciphertext/plaintext), so the copy/memset byte comparison
-    // does not apply. The directed AES sequence self-checks the destination and tag against the KAT.
-    if (dma_config.is_aes) return;
+    // Inline AES: the directed KAT smoke self-checks (scoreboard prediction disabled). When
+    // prediction is enabled, an expected decrypt tag mismatch poisons the destination (the transfer
+    // errors) - skip; the vseq checks STATUS.tag_failed / done.
+    if (dma_config.is_aes && !cfg.aes_scb_predict) return;
+    if (dma_config.is_aes && aes_pred_res < 0) return;
 
     `uvm_info(`gfn, $sformatf("if_name %s: write addr 0x%0x mask 0x%0x data 0x%0x", if_name,
                               a_addr, item.a_mask, item.a_data), UVM_HIGH)
@@ -223,7 +252,8 @@ class dma_scoreboard extends cip_base_scoreboard #(
     // within the 32-bit bus word, which selects the replicated fill byte for memset.
     for (int i = 0; i < $bits(item.a_mask); i++) begin
       if (item.a_mask[i]) begin
-        bit [7:0] exp_byte = memset ? dma_config.fill_byte_for_lane(i) : cfg.src_data[offset];
+        bit [7:0] exp_byte = dma_config.is_aes ? aes_pred_data[offset]
+                           : memset ? dma_config.fill_byte_for_lane(i) : cfg.src_data[offset];
         `uvm_info(`gfn, $sformatf("exp_data %0x write data 0x%0x", exp_byte, wdata[7:0]), UVM_DEBUG)
         `DV_CHECK_EQ(exp_byte, wdata[7:0])
         offset++;
@@ -911,9 +941,11 @@ class dma_scoreboard extends cip_base_scoreboard #(
     // Is the destination a FIFO?
     bit dst_fifo = dma_config.get_write_fifo_en();
 
-    // Inline AES transforms the data; dst != src by design. The directed AES sequence checks the
-    // ciphertext/plaintext and tag against the KAT, so skip the copy comparison.
-    if (dma_config.is_aes) return;
+    // Inline AES: the directed KAT smoke self-checks (prediction disabled). When enabled, the
+    // destination is the DPI-predicted ciphertext/plaintext; an expected decrypt tag mismatch
+    // poisons the destination (the transfer errors) - skip it; the vseq checks the status.
+    if (dma_config.is_aes && !cfg.aes_scb_predict) return;
+    if (dma_config.is_aes && aes_pred_res < 0) return;
 
     `uvm_info(`gfn, $sformatf("Checking output data [0x%0x,0x%0x) against 0%0x byte(s) of source",
                               dst_addr, dst_addr + size, size), UVM_MEDIUM)
@@ -921,8 +953,9 @@ class dma_scoreboard extends cip_base_scoreboard #(
                               UVM_MEDIUM)
 
     for (int i = 0; i < size; i++) begin
-      // For the source data we access the original randomized data that we chose
-      bit [7:0] src_data = cfg.src_data[src_offset + i];
+      // Expected destination byte: the predicted AES output for an AES transfer, else the source.
+      bit [7:0] src_data = dma_config.is_aes ? aes_pred_data[src_offset + i]
+                                             : cfg.src_data[src_offset + i];
       bit [7:0] dst_data;
 
       if (dst_fifo) begin
@@ -1223,6 +1256,10 @@ class dma_scoreboard extends cip_base_scoreboard #(
           // Capture whether this is an inline-AES transfer (CONTROL.aes_op != Off) at start, so the
           // data-comparison skip does not depend on a live mirror read later in the transfer.
           dma_config.is_aes = (`gmv(ral.control.aes_op) != 0);
+          // Predict the AES destination + tag-verify result for this transfer (from the config the
+          // vseq published into cfg) so the on-the-fly write checks have a reference. Only the
+          // randomized AES vseq enables this; the directed KAT smoke self-checks.
+          if (dma_config.is_aes && cfg.aes_scb_predict) predict_aes();
           `uvm_info(`gfn, $sformatf("Got opcode = %s (read_en=%0b write_en=%0b digest=%0d)",
                                     dma_config.opcode.name(), `gmv(ral.control.read_en),
                                     `gmv(ral.control.write_en), `gmv(ral.control.digest)), UVM_HIGH)

@@ -19,6 +19,8 @@ package dma_env_pkg;
   import dma_pkg::*;
   import dma_tlul_pkg::*;
   import tlul_pkg::*;
+  import aes_pkg::*;
+  import aes_model_dpi_pkg::*;
 
   // macro includes
   `include "uvm_macros.svh"
@@ -125,6 +127,7 @@ package dma_env_pkg;
 
   // package sources
   `include "dma_aes_kat.svh"
+  `include "dma_aes_pred.svh"
   `include "dma_seq_item.sv"
   `include "dma_handshake_mode_fifo.sv"
   // Wide (64-bit) TileLink transactor for the host64 SoC System port (must precede

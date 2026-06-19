@@ -43,6 +43,13 @@
 
   sim_tops: ["dma_cov_bind", "dma_bind"]
 
+  // The AES model DPI #includes headers from lowrisc:model:aes. FuseSoC emits +incdir+ for SV but
+  // VCS's C compiler needs explicit -I flags; pass them via -CFLAGS.
+  // The linker also needs -lcrypto for the OpenSSL EVP functions used by the AES reference model.
+  build_opts: ["-CFLAGS -I{build_dir}/fusesoc-work/src/lowrisc_model_aes_1.0",
+               "-CFLAGS -I{build_dir}/fusesoc-work/src/lowrisc_dv_aes_model_dpi_0",
+               "-LDFLAGS -lcrypto"]
+
   xcelium_cov_refine_files: []
 
   // List of test specifications.
@@ -112,6 +119,11 @@
       name: dma_aes_smoke
       uvm_test_seq: dma_aes_smoke_vseq
       reseed: 1
+    }
+    {
+      name: dma_aes
+      uvm_test_seq: dma_aes_vseq
+      reseed: 5
     }
     {
       name: dma_config_lock
