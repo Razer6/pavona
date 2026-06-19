@@ -410,6 +410,79 @@
         stage: V2
         tests: ["dma_generic_stress", "dma_memory_stress"]
       }
+      {
+        name: dma_aes_smoke
+        desc: '''
+              Directed inline AES-CTR/GCM against NIST known-answer-test vectors.
+
+              Stimulus:
+              - Program the KAT key/IV/AAD and run encrypt and decrypt (round-trip), plus a GCM
+                decrypt with a tampered ciphertext byte.
+
+              Checking:
+              - The destination matches the KAT ciphertext (encrypt) / plaintext (decrypt); for GCM
+                TAG_OUT matches the KAT tag with STATUS.tag_valid; the tamper case raises
+                STATUS.tag_failed + ERROR_CODE.aes_tag_error and suppresses done.
+              '''
+        stage: V2
+        tests: ["dma_aes_smoke"]
+      }
+      {
+        name: dma_aes_random
+        desc: '''
+              Randomized inline AES-CTR/GCM with the OpenSSL aes_model_dpi reference.
+
+              Stimulus:
+              - Random key/IV/AAD/plaintext/size over AES-128/192/256 and the CSR and keymgr
+                sideload key paths; each message runs an encrypt -> decrypt-good -> (a fraction)
+                decrypt-tamper round-trip. A DPI KAT self-check runs first to validate the packing.
+
+              Checking:
+              - The scoreboard predicts the destination ciphertext/plaintext via the DPI and checks
+                it on the fly; the sequence checks TAG_OUT vs the reference and the tag_failed/done
+                status. dma_aes_cg covers cipher x dir x key_len x aad x sideload.
+              - Total and chunk sizes vary independently in whole blocks, including shorter final
+                chunks and chunks larger than the total. Check address write-back, absence of
+                traffic while paused, retained CFG_REGWEN lock, ignored configuration writes,
+                and authentication only after the final chunk.
+              '''
+        stage: V2
+        tests: ["dma_aes"]
+      }
+      {
+        name: dma_aes_error
+        desc: '''
+              Inline-AES legal-combination rejection.
+
+              Stimulus:
+              - Program AES transfers with one illegal aspect each: non-16-byte total or chunk size,
+                with inline digest, with hardware handshake, non-4-byte width, reserved aes_op, and
+                too many AAD blocks.
+
+              Checking:
+              - Each is rejected with the expected ERROR_CODE bit (DmaSizeErr / DmaOpcodeErr) and
+                STATUS.error, and never sets STATUS.done.
+              '''
+        stage: V2
+        tests: ["dma_aes_error"]
+      }
+      {
+        name: dma_aes_abort
+        desc: '''
+              Abort of an in-flight inline-AES transfer and recovery.
+
+              Stimulus:
+              - Start an AES transfer and assert CONTROL.abort mid-operation or while suspended
+                between chunks; then run a fresh AES transfer.
+
+              Checking:
+              - The DMA reaches a terminal state (no hang) without setting done for the aborted
+                transfer; the subsequent transfer completes without error (engine flush + SEC_WIPE
+                recovery).
+              '''
+        stage: V2
+        tests: ["dma_aes_abort"]
+      }
     ]
     covergroups: [
       {
@@ -507,6 +580,21 @@
               - Cross coverage:
                 * handshake interrupt enable, interrupt source clearing enablement, and interrupt source clearing address alignment
                 * handshake interrupt enable, interrupt source clearing enablement, and interrupt source clearing write values
+              '''
+      }
+      {
+        name: dma_aes_cg
+        desc: '''
+              - Cover the inline-AES configuration per transfer:
+                * cipher mode (CTR / GCM)
+                * direction (encrypt / decrypt)
+                * key length (AES-128 / 192 / 256)
+                * AAD block count (0 / 1 / 2)
+                * key source (CSR shares / keymgr sideload)
+              - Cross coverage:
+                * mode x direction x key length
+                * mode x AAD block count
+                * key length x key source
               '''
       }
     ]
