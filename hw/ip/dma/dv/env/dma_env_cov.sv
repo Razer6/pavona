@@ -209,7 +209,7 @@ covergroup dma_status_cg with function sample(
 endgroup
 
 covergroup dma_error_code_cg with function sample(
-  bit[7:0] error_code,
+  bit[DmaErrLast-1:0] error_code,
   asid_encoding_e asid,
   bit src
 );
@@ -225,6 +225,8 @@ covergroup dma_error_code_cg with function sample(
   cp_asid_error: coverpoint error_code[DmaAsidErr];
   cp_baselim_error: coverpoint error_code[DmaBaseLimitErr];
   cp_rangeval_error: coverpoint error_code[DmaRangeValidErr];
+
+  cp_aes_tag_error: coverpoint error_code[DmaAesTagErr];
 
   // For a bus error to be detected, the configuration must have been
   // accepted; i.e. the other errors shall not have been seen.

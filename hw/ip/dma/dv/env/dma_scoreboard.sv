@@ -1479,6 +1479,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
         error_code[DmaBaseLimitErr]  = get_field_val(ral.error_code.base_limit_error, item.d_data);
         error_code[DmaRangeValidErr] = get_field_val(ral.error_code.range_valid_error, item.d_data);
         error_code[DmaAsidErr]       = get_field_val(ral.error_code.asid_error, item.d_data);
+        error_code[DmaAesTagErr]     = get_field_val(ral.error_code.aes_tag_error, item.d_data);
         if (cfg.en_cov) begin
           // For bus-specific errors (BusErr, SrcAddrErr and DstAddrErr) let's supply the ASIDs
           // also, so that we can check that we have seem them on _all_ buses.

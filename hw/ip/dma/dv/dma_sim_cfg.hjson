@@ -126,6 +126,16 @@
       reseed: 5
     }
     {
+      name: dma_aes_error
+      uvm_test_seq: dma_aes_error_vseq
+      reseed: 1
+    }
+    {
+      name: dma_aes_abort
+      uvm_test_seq: dma_aes_abort_vseq
+      reseed: 5
+    }
+    {
       name: dma_config_lock
       uvm_test_seq: dma_config_lock_vseq
       reseed: 15
