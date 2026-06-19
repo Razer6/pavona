@@ -47,5 +47,29 @@
       stage: V2S
       tests: []
     }
+    {
+      name: sec_cm_key_sideload
+      desc: "Verify the countermeasure(s) KEY.SIDELOAD."
+      stage: V2S
+      tests: ["dma_aes"]
+    }
+    {
+      name: sec_cm_key_sw_unreadable
+      desc: "Verify the countermeasure(s) KEY.SW_UNREADABLE."
+      stage: V2S
+      tests: []
+    }
+    {
+      name: sec_cm_key_sec_wipe
+      desc: "Verify the countermeasure(s) KEY.SEC_WIPE."
+      stage: V2S
+      tests: []
+    }
+    {
+      name: sec_cm_ctrl_consistency
+      desc: "Verify the countermeasure(s) CTRL.CONSISTENCY."
+      stage: V2S
+      tests: ["dma_aes", "dma_aes_smoke"]
+    }
   ]
 }

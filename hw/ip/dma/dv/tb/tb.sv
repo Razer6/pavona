@@ -107,7 +107,8 @@ module tb;
 
   // Instantiate DUT
   dma #(
-    .EnableDataIntgGen (1)
+    .EnableDataIntgGen (1),
+    .SecAllowForcingMasks (1)
   ) dut (
     .clk_i (clk),
     .rst_ni (rst_n),
