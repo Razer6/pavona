@@ -36,6 +36,28 @@ class dma_env_cfg extends cip_base_env_cfg #(.RAL_T(dma_reg_block));
   // memory address.
   bit [7:0] src_data[];
 
+  // Inline-AES reference model selector for aes_model_dpi (0 = C model, 1 = OpenSSL/BoringSSL).
+  bit ref_model = 1;
+
+  // Inline-AES configuration the vseq programmed for the current transfer, published here so the
+  // scoreboard can predict the result via the AES model DPI (the key/IV/AAD CSRs are write-only).
+  bit [31:0] aes_key0[8];
+  bit [31:0] aes_key1[8];
+  bit [31:0] aes_iv[4];
+  bit [31:0] aes_aad[8];
+  bit [31:0] aes_tag_in[4];         // expected tag for a decrypt (TAG_IN)
+  bit [2:0]  aes_key_len = 3'b001;  // one-hot 128/192/256
+  bit [3:0]  aes_aad_blocks;
+  bit        aes_mode_gcm;          // 0 = CTR, 1 = GCM
+  bit        aes_decrypt;
+  // Enables the scoreboard's AES reference prediction + data check. The randomized AES vseq sets
+  // this (and publishes the config above); the directed KAT smoke leaves it 0 and self-checks.
+  bit        aes_scb_predict;
+  // Current decrypt is an intentional GCM tamper: expect a reference tag mismatch (res < 0) and a
+  // DUT error (tag_failed, no DONE). With this clear, a negative reference result is a model bug.
+  bit        aes_expect_tag_fail;
+
+
   // Per-port (ASID-keyed) mem_model and source/destination `dma_handshake_mode_fifo`
   // models emulating memory or a FIFO depending on handshake_mode_en (data compared in
   // the scoreboard). A uniform 64-bit address width lets 32-bit and 64-bit ports share types.
