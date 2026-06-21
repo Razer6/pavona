@@ -151,6 +151,7 @@
       type:    "uni"
       name:    "keymgr_key"
       act:     "rcv"
+      default: "keymgr_pkg::HW_KEY_REQ_DEFAULT"
       package: "keymgr_pkg"
     }
     { struct:  "dma_tl_h2d"
