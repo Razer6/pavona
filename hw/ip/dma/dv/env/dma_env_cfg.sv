@@ -47,6 +47,7 @@ class dma_env_cfg extends cip_base_env_cfg #(.RAL_T(dma_reg_block));
   bit [31:0] aes_aad[8];
   bit [31:0] aes_tag_in[4];         // expected tag for a decrypt (TAG_IN)
   bit [2:0]  aes_key_len = 3'b001;  // one-hot 128/192/256
+  bit [2:0]  aes_reseed_rate = 3'b001;  // one-hot PER_1/PER_64/PER_8K
   bit [3:0]  aes_aad_blocks;
   bit        aes_mode_gcm;          // 0 = CTR, 1 = GCM
   bit        aes_decrypt;
