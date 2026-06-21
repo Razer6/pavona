@@ -490,10 +490,15 @@
         desc: '''
               Cover the DMA control FSM (read/write overlap design):
               - Every control state is visited: DmaIdle, DmaClearIntrSrc, DmaWaitIntrSrcResponse,
-                DmaAddrSetup, DmaReadPrime, DmaOverlap, DmaLastWrite, DmaShaFinalize, DmaError.
+                DmaAddrSetup, DmaReadPrime, DmaOverlap, DmaLastWrite, DmaShaFinalize, DmaError, and
+                the inline-AES sub-FSM states DmaAesGather, DmaAesProcess, DmaAesScatter,
+                DmaAesGhashAad, DmaAesTag.
               - FSM transitions of the per-beat overlap region: DmaAddrSetup -> DmaReadPrime,
                 DmaReadPrime -> {DmaOverlap, DmaLastWrite}, DmaOverlap -> {DmaOverlap, DmaLastWrite},
                 DmaLastWrite -> {DmaShaFinalize, DmaIdle}, and DmaShaFinalize -> DmaIdle.
+              - Inline-AES sub-FSM transitions: setup -> (GhashAad ->) Gather -> Process -> Scatter
+                -> {next-block Gather | Tag (GCM finalize) | Idle (CTR complete)}, Tag -> Idle (GCM
+                complete) and Tag -> DmaError (tag mismatch).
               - Concurrent read/write overlap: read_issue and write_issue asserted in the same cycle
                 (the actual overlap), crossed with cross_port to confirm overlap only occurs on
                 cross-port copies.
@@ -591,10 +596,13 @@
                 * key length (AES-128 / 192 / 256)
                 * AAD block count (0 / 1 / 2)
                 * key source (CSR shares / keymgr sideload)
+                * transfer size in 16-byte blocks (one / two / three-or-more)
+                * PRNG reseed rate (PER_1 / PER_64 / PER_8K)
               - Cross coverage:
                 * mode x direction x key length
                 * mode x AAD block count
                 * key length x key source
+                * mode x direction x block count
               '''
       }
     ]

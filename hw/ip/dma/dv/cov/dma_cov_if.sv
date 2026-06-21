@@ -58,6 +58,12 @@ interface dma_cov_if
       bins last_write  = {DmaLastWrite};
       bins sha_final   = {DmaShaFinalize};
       bins error       = {DmaError};
+      // Inline AES block-serial sub-FSM.
+      bins aes_gather   = {DmaAesGather};
+      bins aes_process  = {DmaAesProcess};
+      bins aes_scatter  = {DmaAesScatter};
+      bins aes_ghash_aad = {DmaAesGhashAad};
+      bins aes_tag      = {DmaAesTag};
     }
 
     // FSM edges of the per-beat overlap region.
@@ -74,6 +80,18 @@ interface dma_cov_if
       bins last_to_final     = (DmaLastWrite  => DmaShaFinalize);
       bins last_to_idle      = (DmaLastWrite  => DmaIdle);
       bins final_to_idle     = (DmaShaFinalize => DmaIdle);
+      // Inline AES block-serial path: setup -> (AAD ->) gather -> process -> scatter -> {next
+      // block | tag (GCM) | idle (CTR)}; the tag completes or errors on a mismatch.
+      bins setup_to_gather    = (DmaAddrSetup   => DmaAesGather);
+      bins setup_to_aad       = (DmaAddrSetup   => DmaAesGhashAad);
+      bins aad_to_gather      = (DmaAesGhashAad => DmaAesGather);
+      bins gather_to_process  = (DmaAesGather   => DmaAesProcess);
+      bins process_to_scatter = (DmaAesProcess  => DmaAesScatter);
+      bins scatter_to_gather  = (DmaAesScatter  => DmaAesGather);  // next block
+      bins scatter_to_tag     = (DmaAesScatter  => DmaAesTag);     // GCM finalize
+      bins scatter_to_idle    = (DmaAesScatter  => DmaIdle);       // CTR complete
+      bins tag_to_idle        = (DmaAesTag      => DmaIdle);       // GCM complete
+      bins tag_to_error       = (DmaAesTag      => DmaError);      // tag mismatch
     }
 
     // Concurrent read/write activity. Bit order is {read_issue, write_issue}: MSB=read, LSB=write.

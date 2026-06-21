@@ -229,9 +229,17 @@ class dma_scoreboard extends cip_base_scoreboard #(
                     cfg.src_data, aad_b, tag_in, aes_pred_data, pred_tag, aes_pred_res);
     `uvm_info(`gfn, $sformatf("AES predict: mode=%s dec=%0b res=%0d bytes=%0d", mode.name(),
                               cfg.aes_decrypt, aes_pred_res, aes_pred_data.size()), UVM_MEDIUM)
+    // res < 0 (tag mismatch) is legitimate only for an intended tamper; else it is a model failure.
+    if (cfg.aes_expect_tag_fail) begin
+      `DV_CHECK_LT(aes_pred_res, 0,
+                   "aes_expect_tag_fail set but reference verified the tag (ineffective tamper)")
+    end else begin
+      `DV_CHECK_GE(aes_pred_res, 0,
+                   "reference reported a tag failure on a non-tamper transfer (DPI/model error?)")
+    end
     if (cfg.en_cov) begin
       cov.aes_cg.sample(cfg.aes_mode_gcm, cfg.aes_decrypt, cfg.aes_key_len, cfg.aes_aad_blocks,
-                        cfg.aes_sideload);
+                        cfg.aes_sideload, cfg.src_data.size() / 16, cfg.aes_reseed_rate);
     end
   endfunction
 
@@ -1358,7 +1366,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
         end
       end
       "status": begin
-        bit busy, done, chunk_done, aborted, error, sha2_digest_valid;
+        bit busy, done, chunk_done, aborted, error, sha2_digest_valid, tag_valid, tag_failed;
         bit exp_aborted = abort_via_reg_write;
 
         do_read_check = 1'b0;
@@ -1368,6 +1376,17 @@ class dma_scoreboard extends cip_base_scoreboard #(
         error = get_field_val(ral.status.error, item.d_data);
         chunk_done = get_field_val(ral.status.chunk_done, item.d_data);
         sha2_digest_valid = get_field_val(ral.status.sha2_digest_valid, item.d_data);
+        tag_valid = get_field_val(ral.status.tag_valid, item.d_data);
+        tag_failed = get_field_val(ral.status.tag_failed, item.d_data);
+
+        // AES tamper: the DUT must error with tag_failed and never report DONE (dma.sv DmaAesTag,
+        // AesTagFailNoDone_A), so a wrongly-completed tag-failed decrypt cannot pass here.
+        if (dma_config.is_aes && cfg.aes_expect_tag_fail) begin
+          `DV_CHECK_EQ(done, 1'b0, "AES decrypt tag mismatch wrongly reported STATUS.done")
+          if (error) begin
+            `DV_CHECK_EQ(tag_failed, 1'b1, "AES tag mismatch errored without STATUS.tag_failed")
+          end
+        end
 
         if (done || aborted || error || chunk_done ) begin
           string reasons;
@@ -1416,7 +1435,9 @@ class dma_scoreboard extends cip_base_scoreboard #(
                                .chunk_done (chunk_done),
                                .aborted (aborted),
                                .error (error),
-                               .sha2_digest_valid (sha2_digest_valid));
+                               .sha2_digest_valid (sha2_digest_valid),
+                               .tag_valid (tag_valid),
+                               .tag_failed (tag_failed));
         end
         // Check results after each chunk of the transfer (memory-to-memory) or after the complete
         // transfer (handshaking mode).
