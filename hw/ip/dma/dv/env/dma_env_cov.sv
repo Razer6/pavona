@@ -196,7 +196,9 @@ covergroup dma_status_cg with function sample(
   bit chunk_done,
   bit aborted,
   bit error,
-  bit sha2_digest_valid
+  bit sha2_digest_valid,
+  bit tag_valid,
+  bit tag_failed
 );
   option.per_instance = 1;
   option.name = "dma_status_cg";
@@ -206,6 +208,8 @@ covergroup dma_status_cg with function sample(
   cp_status_aborted: coverpoint aborted;
   cp_status_error: coverpoint error;
   cp_sha2_digest_valid: coverpoint sha2_digest_valid;
+  cp_tag_valid: coverpoint tag_valid;   // inline AES-GCM
+  cp_tag_failed: coverpoint tag_failed; // inline AES-GCM decrypt mismatch
 endgroup
 
 covergroup dma_error_code_cg with function sample(
@@ -312,7 +316,8 @@ endgroup
 
 // Inline-AES configuration coverage (sampled per AES transfer by the predicting scoreboard).
 covergroup dma_aes_cg with function sample(
-  bit gcm, bit decrypt, bit [2:0] key_len, bit [3:0] aad_blocks, bit sideload);
+  bit gcm, bit decrypt, bit [2:0] key_len, bit [3:0] aad_blocks, bit sideload,
+  int n_blocks, bit [2:0] reseed_rate);
   option.per_instance = 1;
   option.name = "dma_aes_cg";
 
@@ -329,10 +334,22 @@ covergroup dma_aes_cg with function sample(
     bins two  = {2};
   }
   cp_sideload: coverpoint sideload;
+  // Transfer size in 16-byte blocks: single block vs small/larger multi-block.
+  cp_n_blocks: coverpoint n_blocks {
+    bins one      = {1};
+    bins two      = {2};
+    bins three_or_more = {[3:$]};
+  }
+  cp_reseed_rate: coverpoint reseed_rate {
+    bins per_1  = {3'b001};
+    bins per_64 = {3'b010};
+    bins per_8k = {3'b100};
+  }
 
   cr_mode_dir_keylen: cross cp_mode, cp_dir, cp_key_len;
   cr_mode_aad:        cross cp_mode, cp_aad;
   cr_keylen_sideload: cross cp_key_len, cp_sideload;
+  cr_mode_dir_nblocks: cross cp_mode, cp_dir, cp_n_blocks;
 endgroup
 
 class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
