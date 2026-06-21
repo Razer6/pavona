@@ -135,8 +135,10 @@ class dma_base_vseq extends cip_base_vseq #(
     // TODO: we should perhaps not be assuming a 32-bit data bus here.
     bit [63:0] end_addr = (start_addr + size + 3) & ~64'd3;
     bit [63:0] addr = {start_addr[63:2], 2'd0};
-    `uvm_info(`gfn, $sformatf("Populating ASID 0x%x address range [0x%0x,0x%0x)",
-                              asid, addr, end_addr), UVM_MEDIUM)
+    // Guard against 64-bit wrap-around: populate by byte count instead of address comparison.
+    int unsigned num_bytes = ((size + 3) & ~32'd3) + (start_addr[1:0] != 0 ? 4 : 0);
+    `uvm_info(`gfn, $sformatf("Populating ASID 0x%x address range [0x%0x,+0x%0x)",
+                              asid, addr, num_bytes), UVM_MEDIUM)
 
     if (!cfg.mems.exists(asid)) begin
       `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
@@ -145,16 +147,18 @@ class dma_base_vseq extends cip_base_vseq #(
 
     // Alas we must ensure that the first bus word is fully-defined because TL-UL host adapter
     // fetches only complete bus words and there are assertion checks on the TL-UL bus.
-    while (addr < end_addr) begin
-      // Ideally we would use 'X' instead of a defined pattern.
-      bit [7:0] data = 32'hBAAD_F00D >> {addr[1:0], 3'd0};
-      if (addr >= start_addr && addr - start_addr < size) begin
-        // Valid source data
-        data = src_data[offset];
-        offset++;
+    // Use byte index `i` instead of address comparison to avoid 64-bit wrap-around issues.
+    begin
+      int unsigned start_off = start_addr[1:0]; // padding bytes before valid data
+      for (int unsigned i = 0; i < num_bytes; i++) begin
+        bit [7:0] data = 32'hBAAD_F00D >> {addr[1:0], 3'd0};
+        if (i >= start_off && (i - start_off) < size) begin
+          data = src_data[offset];
+          offset++;
+        end
+        cfg.mems[asid].write_byte(addr, data);
+        addr++;
       end
-      cfg.mems[asid].write_byte(addr, data);
-      addr++;
     end
   endfunction
 
@@ -355,7 +359,8 @@ class dma_base_vseq extends cip_base_vseq #(
   // Program the inline-AES key/IV/AAD CSRs and AES_CTRL. key_len is the one-hot aes_pkg::key_len_e
   // value (4 = AES-256, 1 = AES-128); sideload selects the keymgr key (0 = CSR key shares).
   task program_aes_config(bit [31:0] key0[8], bit [31:0] key1[8], bit [31:0] iv[4],
-                          bit [31:0] aad[8], int aad_blocks, bit [2:0] key_len, bit sideload);
+                          bit [31:0] aad[8], int aad_blocks, bit [2:0] key_len, bit sideload,
+                          bit [2:0] reseed_rate = 3'b001 /* PER_1 */);
     foreach (key0[i]) csr_wr(ral.key_share0[i], key0[i]);
     foreach (key1[i]) csr_wr(ral.key_share1[i], key1[i]);
     foreach (iv[i])   csr_wr(ral.iv[i], iv[i]);
@@ -364,7 +369,7 @@ class dma_base_vseq extends cip_base_vseq #(
     end
     ral.aes_ctrl.key_len.set(key_len);
     ral.aes_ctrl.sideload.set(sideload);
-    ral.aes_ctrl.prng_reseed_rate.set(3'd1); // PER_1
+    ral.aes_ctrl.prng_reseed_rate.set(reseed_rate);
     ral.aes_ctrl.aad_blocks.set(aad_blocks[3:0]);
     csr_update(ral.aes_ctrl);
   endtask : program_aes_config

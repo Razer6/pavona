@@ -226,11 +226,17 @@
     { name: "ASID.INTERSIG.MUBI",
       desc: "Destination and source ASID signals are multibit encoded."
     }
+    { name: "LC_ESCALATE_EN.INTERSIG.MUBI",
+      desc: "Life-cycle escalation input to the inline AES is multibit encoded and synchronized."
+    }
     { name: "RANGE.CONFIG.REGWEN_MUBI",
       desc: "DMA enabled memory range is software multibit lockable."
     }
     { name: "FSM.SPARSE",
-      desc: "FSM is sparsely encoded. There is a single `ctrl_state` FSM."
+      desc: "The main `ctrl_state` FSM is sparsely encoded."
+    }
+    { name: "AES.FSM.SPARSE",
+      desc: "The inline-AES wrapper (`dma_aes`) sub-FSM is sparsely encoded."
     }
     { name: "KEY.SIDELOAD",
       desc: "Inline AES can source its key from the keymgr sideload interface."

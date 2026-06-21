@@ -27,4 +27,6 @@
 `include "dma_aes_vseq.sv"
 `include "dma_aes_error_vseq.sv"
 `include "dma_aes_abort_vseq.sv"
+`include "dma_aes_clear_mid_commit_vseq.sv"
+`include "dma_aes_bus_err_vseq.sv"
 `include "dma_verify_vseq.sv"

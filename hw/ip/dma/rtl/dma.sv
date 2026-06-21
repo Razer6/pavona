@@ -348,9 +348,15 @@ module dma
   assign aes_cfg_mode        = control_q.aes_gcm     ? aes_pkg::AES_GCM  : aes_pkg::AES_CTR;
   assign aes_cfg_key_len     = aes_pkg::key_len_e'(reg2hw.aes_ctrl.key_len.q);
   assign aes_cfg_reseed_rate = aes_pkg::prs_rate_e'(reg2hw.aes_ctrl.prng_reseed_rate.q);
+  // SEC_CM: KEY.SIDELOAD
+  // sideload selects the keymgr sideload key over the KEY_SHARE CSRs; the key-mux isolation is in
+  // aes_core (keymgr_key_i is routed there and consumed only when sideload is set).
   assign aes_cfg_sideload    = reg2hw.aes_ctrl.sideload.q; // 1 = keymgr sideload key
 
   // Pack the key-share and IV CSR arrays for the wrapper.
+  // SEC_CM: KEY.SW_UNREADABLE
+  // KEY_SHARE0/1 and TAG_IN are write-only (reggen swaccess=wo): software cannot read them back;
+  // only this HW path consumes them.
   logic [7:0][31:0] aes_key_share0, aes_key_share1;
   logic [3:0][31:0] aes_iv;
   always_comb begin
@@ -2344,6 +2350,10 @@ module dma
   logic aes_err_clr;
   logic aes_wipe;
   assign aes_err_clr = reg2hw.status.error.qe & reg2hw.status.error.q;
+  // SEC_CM: KEY.SEC_WIPE
+  // Wipe the inline-AES key/IV/AAD/TAG_IN CSR copies on clear, abort or error (v1 zeroizes; a
+  // pseudo-random wipe value is the production enhancement). The aes_core-internal key/IV/GHASH
+  // state is wiped via the held key_iv_data_in_clear trigger (see dma_aes clr_hold).
   assign aes_wipe    = aes_clear || cfg_abort_en || (ctrl_state_q == DmaError);
   always_comb begin
     // tag_valid / tag_failed: set by the tag state, cleared at the start of a new transfer.
@@ -2488,21 +2498,26 @@ module dma
     end
   end
 
+  // GHASH always exists (the inline AES always builds GCM), so its FSM check is unconditional.
   `ASSERT_PRIM_FSM_ERROR_TRIGGER_ALERT(AesGhashFsmCheck_A,
       u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.u_state_regs,
       alert_tx_o[AlertFatalFaultIdx])
 
-  // Inline AES onehot-check SEC_CM assertions (GHASH masked-add muxes and gf_mult1 mux).
-  for (genvar s = 0; s < 2; s++) begin : gen_ghash_onehot_add_in_sva
-    `ASSERT_PRIM_ONEHOT_ERROR_TRIGGER_ALERT(GhashAadOnehotCheck_A,
-        u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.gen_masked_add.gen_add_in_muxes[s].
-            u_prim_onehot_check_add_in_sel,
+  // GHASH masked-add / gf_mult1 muxes only exist when masking is enabled (`gen_masked_add` /
+  // `gen_gf_mult1_mux` in aes_ghash); gate these SVA references on SecAesMasking so unmasked
+  // builds still elaborate.
+  if (SecAesMasking) begin : gen_ghash_masked_onehot_sva
+    for (genvar s = 0; s < 2; s++) begin : gen_ghash_onehot_add_in_sva
+      `ASSERT_PRIM_ONEHOT_ERROR_TRIGGER_ALERT(GhashAadOnehotCheck_A,
+          u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.gen_masked_add.gen_add_in_muxes[s].
+              u_prim_onehot_check_add_in_sel,
+          alert_tx_o[AlertFatalFaultIdx])
+    end
+    `ASSERT_PRIM_ONEHOT_ERROR_TRIGGER_ALERT(GhashMultOnehotCheck_A,
+        u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.gen_gf_mult1_mux.
+            u_prim_onehot_check_gf_mult1_in_sel,
         alert_tx_o[AlertFatalFaultIdx])
   end
-  `ASSERT_PRIM_ONEHOT_ERROR_TRIGGER_ALERT(GhashMultOnehotCheck_A,
-      u_dma_aes.u_aes_core.gen_ghash.u_aes_ghash.gen_gf_mult1_mux.
-          u_prim_onehot_check_gf_mult1_in_sel,
-      alert_tx_o[AlertFatalFaultIdx])
 
   // Inline AES decrypt tag-compare invariants (SEC_CM CTRL.CONSISTENCY): the tag is only accepted
   // when the redundant compare agrees, and a mismatch never lets the transfer complete.

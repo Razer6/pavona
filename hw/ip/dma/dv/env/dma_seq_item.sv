@@ -50,6 +50,10 @@ class dma_seq_item extends uvm_sequence_item;
   // != Off). The scoreboard skips its copy/memset data comparison for AES (the directed AES
   // sequence self-checks the ciphertext/plaintext and tag against the KAT).
   bit is_aes;
+  // Inline-AES sub-config, mirrored by the scoreboard from CONTROL/AES_CTRL so check_config can
+  // model the DUT's AES legality checks. Meaningful only when is_aes.
+  bit       aes_gcm;             // 1 = GCM, 0 = CTR
+  bit [3:0] aes_num_aad_blocks;  // AES_CTRL.aad_blocks
   rand dma_transfer_width_e per_transfer_width;
   rand asid_encoding_e src_asid;
   rand asid_encoding_e dst_asid;
@@ -578,6 +582,36 @@ class dma_seq_item extends uvm_sequence_item;
     if (handshake && (!op_reads() || !op_writes())) begin
       `uvm_info(`gfn, " - Hardware handshake requires both read and write", UVM_MEDIUM)
       valid_config = 0;
+    end
+
+    // Inline-AES legal-combination checks, mirroring the DUT (dma.sv). The sideload key is always
+    // driven valid by the TB, so the DUT's sideload-valid check cannot fire here.
+    if (is_aes) begin
+      if (!op_reads() || !op_writes() || op_has_digest() || handshake) begin
+        `uvm_info(`gfn, " - AES requires a read+write copy with no digest and no handshake",
+                  UVM_MEDIUM)
+        valid_config = 0;
+      end
+      if (per_transfer_width != DmaXfer4BperTxn) begin
+        `uvm_info(`gfn, " - AES requires 4B/txn transfers", UVM_MEDIUM)
+        valid_config = 0;
+      end
+      if (|total_data_size[3:0] || |chunk_data_size[3:0]) begin
+        `uvm_info(`gfn, " - AES requires 16B-multiple sizes", UVM_MEDIUM)
+        valid_config = 0;
+      end
+      if (!src_addr_inc || !dst_addr_inc || src_chunk_wrap || dst_chunk_wrap) begin
+        `uvm_info(`gfn, " - AES requires incrementing, non-wrapping addresses", UVM_MEDIUM)
+        valid_config = 0;
+      end
+      if (aes_num_aad_blocks > 4'd2) begin
+        `uvm_info(`gfn, " - AES allows at most 2 AAD blocks", UVM_MEDIUM)
+        valid_config = 0;
+      end
+      if (aes_gcm && |total_data_size[31:17]) begin
+        `uvm_info(`gfn, " - GCM transfer exceeds the 8191-block text limit", UVM_MEDIUM)
+        valid_config = 0;
+      end
     end
 
     // The DMA-enabled memory range must have been set up, even though it may not be used
