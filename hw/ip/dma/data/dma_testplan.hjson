@@ -436,18 +436,49 @@
               - Random key/IV/AAD/plaintext/size over AES-128/192/256 and the CSR and keymgr
                 sideload key paths; each message runs an encrypt -> decrypt-good -> (a fraction)
                 decrypt-tamper round-trip. A DPI KAT self-check runs first to validate the packing.
+              - The PRNG reseed rate (PER_1/PER_64/PER_8K) is randomized per message, and a fraction
+                of messages route the destination to a different host port so the cross-port AES
+                datapath (gather on the OT-internal port, scatter on the SoC port) is exercised.
 
               Checking:
               - The scoreboard predicts the destination ciphertext/plaintext via the DPI and checks
                 it on the fly; the sequence checks TAG_OUT vs the reference and the tag_failed/done
-                status. dma_aes_cg covers cipher x dir x key_len x aad x sideload.
+                status. dma_aes_cg covers cipher x dir x key_len x aad x sideload x n_blocks x
+                reseed_rate; dma_fsm_cg covers the AES sub-FSM states/transitions and cross_port.
               - Total and chunk sizes vary independently in whole blocks, including shorter final
                 chunks and chunks larger than the total. Check address write-back, absence of
                 traffic while paused, retained CFG_REGWEN lock, ignored configuration writes,
                 and authentication only after the final chunk.
+              - Repeat CTR/GCM encrypt/decrypt with hardware-paced chunks: disabled triggers must
+                not start a transfer, and GO/BUSY and configuration locking must persist between
+                enabled triggers without chunk_done or early authentication.
+              - Arming a new initial transfer clears stale tag_valid/tag_failed before its
+                first hardware trigger, including after a previous successful GCM message.
               '''
         stage: V2
         tests: ["dma_aes"]
+      }
+      {
+        name: dma_aes_fifo
+        desc: '''
+              Hardware-paced AES transfers with independent source/destination addressing.
+
+              Stimulus:
+              - Exercise CTR/GCM encryption and decryption with all increment/wrap combinations
+                on source and destination: memory-to-FIFO, FIFO-to-memory, FIFO-to-FIFO and
+                wrapping buffer windows. Supply/drain each chunk before issuing the next trigger.
+              - Cover smaller, larger and equal total/chunk sizes and shorter final chunks.
+              - Run GCM decryption with an incorrect tag after sending output to a FIFO.
+              - Abort between FIFO chunks or inject a bus error after the next trigger, then
+                verify recovery with a fresh message.
+
+              Checking:
+              - Compare each output chunk to known ciphertext/plaintext and the final GCM tag.
+              - Check every bus address, FIFO underflow/overflow, exact byte counts, idle pauses,
+                configuration locking, address write-back and final-only authentication.
+              '''
+        stage: V2
+        tests: ["dma_aes_fifo"]
       }
       {
         name: dma_aes_error
@@ -456,8 +487,12 @@
 
               Stimulus:
               - Program AES transfers with one illegal aspect each: non-16-byte total or chunk size,
-                with inline digest, with hardware handshake, non-4-byte width, reserved aes_op, and
+                with inline digest, non-4-byte width, reserved aes_op, and
                 too many AAD blocks.
+              - Reject a non-16-byte chunk size after a hardware-handshake trigger as well.
+              - Reject all unconfigured 8-bit ASIDs on source, destination and interrupt-clear
+                targets, including reserved codewords and single-bit corruption of assigned IDs.
+                Check ASID error status and absence of data traffic.
 
               Checking:
               - Each is rejected with the expected ERROR_CODE bit (DmaSizeErr / DmaOpcodeErr) and
@@ -472,8 +507,9 @@
               Abort of an in-flight inline-AES transfer and recovery.
 
               Stimulus:
-              - Start an AES transfer and assert CONTROL.abort mid-operation or while suspended
-                between chunks; then run a fresh AES transfer.
+              - Start an AES transfer and assert CONTROL.abort mid-operation, while suspended
+                between software- or hardware-paced chunks, or before the first hardware trigger;
+                then run a fresh AES transfer.
 
               Checking:
               - The DMA reaches a terminal state (no hang) without setting done for the aborted
@@ -482,6 +518,51 @@
               '''
         stage: V2
         tests: ["dma_aes_abort"]
+      }
+      {
+        name: dma_aes_clear_mid_commit
+        desc: '''
+              Inline-AES shadow-register commit-phase desync on abort/clear.
+              The aes_core CTRL_SHADOWED / CTRL_GCM_SHADOWED registers commit on a two-write
+              protocol; a clear_i (DMA abort) landing between the two accepted writes used to reset
+              the wrapper's open-loop cfg_phase mirror but not the hardware prim_subreg_shadow
+              phase, leaving the next transfer's first write to be mis-read as the commit write. The
+              fix pulses the shadow read strobe at start_i to re-arm the hardware phase.
+
+              Stimulus:
+              - For CTR and GCM: abort an in-flight AES transfer (real clear path), then place the
+                aes_core shadow commit-phase flops into the post-abort desynced state via
+                uvm_hdl_deposit (the single-cycle natural window is not addressable from the CSR
+                abort path), confirm via uvm_hdl_read that the desync is established, and launch a
+                fresh transfer with a different key/IV/AAD.
+
+              Checking:
+              - The recovery transfer produces the correct ciphertext (scoreboard AES predictor:
+                proves the new config actually committed, not the stale one) and raises NO
+                recov_fault (no spurious recov_ctrl_update_err) and no STATUS.error. The
+                uvm_hdl_read guard fails the test if the desync was not established (no vacuous
+                pass).
+              '''
+        stage: V2
+        tests: ["dma_aes_clear_mid_commit"]
+      }
+      {
+        name: dma_aes_bus_err
+        desc: '''
+              TL-UL bus errors hit during an inline-AES transfer.
+
+              Stimulus:
+              - Complete the first chunk of an AES-CTR/GCM transfer, enable d_error injection,
+                and resume the message through software or a hardware trigger. Then run an
+                error-free recovery transfer.
+
+              Checking:
+              - When a transfer errors it reports ERROR_CODE.bus_error + STATUS.error and never
+                STATUS.done; the engine reaches a terminal state (no hang) and the subsequent
+                error-free transfer completes cleanly.
+              '''
+        stage: V2
+        tests: ["dma_aes_bus_err"]
       }
     ]
     covergroups: [

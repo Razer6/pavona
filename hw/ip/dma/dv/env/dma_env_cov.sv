@@ -120,6 +120,15 @@ covergroup dma_config_cg with function sample(dma_seq_item dma_config,
       (dma_config.chunk_data_size != 0 &&
        (dma_config.total_data_size % dma_config.chunk_data_size) != 0)
       iff (dma_config.is_aes);
+  cp_aes_gcm: coverpoint dma_config.aes_gcm iff (dma_config.is_aes);
+  cr_aes_chunk_mode: cross cp_aes_chunk_relation, cp_aes_short_final_chunk, cp_aes_gcm;
+  cr_aes_chunk_handshake: cross cp_aes_chunk_relation, cp_aes_gcm, cp_handshake;
+  cp_aes_src_addressing: coverpoint {dma_config.src_addr_inc, dma_config.src_chunk_wrap}
+      iff (dma_config.is_aes);
+  cp_aes_dst_addressing: coverpoint {dma_config.dst_addr_inc, dma_config.dst_chunk_wrap}
+      iff (dma_config.is_aes);
+  cr_aes_fifo_mode: cross cp_aes_src_addressing, cp_aes_dst_addressing,
+                         cp_aes_gcm, cp_handshake;
 
   cr_src_addr_X_src_asid: cross
       cp_src_addr,
