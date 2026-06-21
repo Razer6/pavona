@@ -17,8 +17,21 @@ class dma_aes_vseq extends dma_base_vseq;
   localparam bit [31:0] RangeLim  = 32'h0000_FFFF;
 
   rand int unsigned num_msgs;
-  constraint num_msgs_c { num_msgs inside {[8:16]}; }
+  constraint num_msgs_c { num_msgs inside {[12:16]}; }
+
+  // Source/destination host ports for the current message. The source is always the range-checked
+  // OT-internal port; a fraction of messages route the destination to a different host port
+  // (SocControlAddr) so the cross-port AES datapath (gather on one port, scatter on another) runs.
+  asid_encoding_e src_asid_sel = OtInternalAddr;
+  asid_encoding_e dst_asid_sel = OtInternalAddr;
   int unsigned chunk_blocks;
+  bit hardware_handshake;
+
+  task trigger_chunk();
+    set_hardware_handshake_intr(1);
+    cfg.clk_rst_vif.wait_clks(2);
+    release_hardware_handshake_intr();
+  endtask
 
   // ---- byte/word helpers ----
   function void words_to_bytes(input bit [31:0] words[], output bit [7:0] bytes[]);
@@ -26,17 +39,17 @@ class dma_aes_vseq extends dma_base_vseq;
     foreach (words[w]) for (int b = 0; b < 4; b++) bytes[w*4+b] = words[w][b*8 +: 8];
   endfunction
 
-  function void mem_preload(bit [63:0] addr, ref bit [7:0] data[]);
-    foreach (data[i]) cfg.mems[OtInternalAddr].write_byte(addr + i, data[i]);
+  function void mem_preload(asid_encoding_e asid, bit [63:0] addr, ref bit [7:0] data[]);
+    foreach (data[i]) cfg.mems[asid].write_byte(addr + i, data[i]);
   endfunction
 
-  function void mem_read(bit [63:0] addr, int n, output bit [7:0] data[]);
+  function void mem_read(asid_encoding_e asid, bit [63:0] addr, int n, output bit [7:0] data[]);
     data = new[n];
-    for (int i = 0; i < n; i++) data[i] = cfg.mems[OtInternalAddr].read_byte(addr + i);
+    for (int i = 0; i < n; i++) data[i] = cfg.mems[asid].read_byte(addr + i);
   endfunction
 
-  function void mem_poison(bit [63:0] addr, int n);
-    for (int i = 0; i < n; i++) cfg.mems[OtInternalAddr].write_byte(addr + i, 8'hA5);
+  function void mem_poison(asid_encoding_e asid, bit [63:0] addr, int n);
+    for (int i = 0; i < n; i++) cfg.mems[asid].write_byte(addr + i, 8'hA5);
   endfunction
 
   task clear_status();
@@ -83,37 +96,68 @@ class dma_aes_vseq extends dma_base_vseq;
     dma_seq_item c = dma_seq_item::type_id::create("c");
     opcode_e op = cfg.aes_mode_gcm ? (dec ? OpcAesGcmDec : OpcAesGcmEnc)
                                    : (dec ? OpcAesCtrDec : OpcAesCtrEnc);
-    c.src_asid = OtInternalAddr; c.dst_asid = OtInternalAddr;
+    c.src_asid = src_asid_sel; c.dst_asid = dst_asid_sel;
     c.src_addr = SrcAddr; c.dst_addr = DstAddr;
     c.src_addr_inc = 1'b1; c.dst_addr_inc = 1'b1;   // memory mode (not FIFO)
     c.src_chunk_wrap = 1'b0; c.dst_chunk_wrap = 1'b0;
-    c.handshake = 1'b0;
+    c.handshake = hardware_handshake;
+    c.handshake_intr_en = 1;
+    c.lsio_trigger_i = 1;
+    c.clear_intr_src = '0;
     c.total_data_size = n_blocks*16;
     c.chunk_data_size = (chunk_blocks == 0 ? n_blocks : chunk_blocks)*16;
     c.per_transfer_width = DmaXfer4BperTxn;
     cfg.src_data = src_bytes;            // scoreboard predicts from this
     cfg.aes_decrypt = dec;
 
-    mem_preload(SrcAddr, src_bytes);
-    mem_poison(DstAddr, n_blocks*16);
+    mem_preload(src_asid_sel, SrcAddr, src_bytes);
+    mem_poison(dst_asid_sel, DstAddr, n_blocks*16);
     clear_status();
+    release_hardware_handshake_intr();
+    csr_wr(ral.clear_intr_src, 0);
+    csr_wr(ral.handshake_intr_enable, 1);
     set_src_addr(SrcAddr); set_dst_addr(DstAddr);
     set_src_config(1'b0, 1'b1); set_dst_config(1'b0, 1'b1);
-    set_addr_space_id(OtInternalAddr, OtInternalAddr);
+    set_addr_space_id(src_asid_sel, dst_asid_sel);
     set_total_size(n_blocks*16); set_chunk_data_size(c.chunk_data_size);
     set_transfer_width(DmaXfer4BperTxn);
     set_dma_enabled_memory_range(RangeBase, RangeLim, 1'b1, MuBi4True);
     program_aes_config(cfg.aes_key0, cfg.aes_key1, cfg.aes_iv, cfg.aes_aad,
-                       cfg.aes_aad_blocks, cfg.aes_key_len, cfg.aes_sideload);
+                       cfg.aes_aad_blocks, cfg.aes_key_len, cfg.aes_sideload, cfg.aes_reseed_rate);
     if (dec) program_aes_tag_in(cfg.aes_tag_in);
     start_device(c);
-    set_control(op, .initial_transfer(1'b1), .handshake(1'b0), .go(1'b1));
+    set_control(op, .initial_transfer(1'b1), .handshake(hardware_handshake), .go(1'b1));
+    if (hardware_handshake) begin
+      bit [31:0] st;
+      // A disabled source must not start the first chunk.
+      set_hardware_handshake_intr(2);
+      delay(20);
+      csr_rd(ral.status, st);
+      `DV_CHECK_EQ(st[7:0], 0, "AES started early or retained stale authentication status")
+      for (int b = 0; b < n_blocks*16; b++) begin
+        `DV_CHECK_EQ(cfg.mems[dst_asid_sel].read_byte(DstAddr + b), 8'hA5)
+      end
+      release_hardware_handshake_intr();
+      trigger_chunk();
+    end
     for (int moved = c.chunk_data_size; moved < n_blocks*16; moved += c.chunk_data_size) begin
       bit [31:0] st, value;
-      `DV_SPINWAIT(do begin csr_rd(ral.status, st); end while (!(st[5] || st[3]));,
-                   "AES did not reach chunk boundary")
+      if (hardware_handshake) begin
+        // Handshake mode signals no chunk_done; address write-back marks the boundary.
+        `DV_SPINWAIT(do begin csr_rd(ral.src_addr_lo, value); end
+                     while (value != SrcAddr + moved);,
+                     "AES handshake did not finish its chunk")
+        csr_rd(ral.status, st);
+        `DV_CHECK_EQ(st[5], 0, "Hardware handshake raised chunk_done")
+        csr_rd(ral.control, value);
+        `DV_CHECK_EQ(value[31], 1, "Hardware handshake cleared GO between chunks")
+      end else begin
+        `DV_SPINWAIT(do begin csr_rd(ral.status, st); end while (!(st[5] || st[3]));,
+                     "AES did not reach chunk boundary")
+      end
       `DV_CHECK_EQ(st[7:6], 2'b00, "Authentication completed before the final chunk")
-      `DV_CHECK_EQ(st[3:0], 4'b0000, "Intermediate chunk reported busy/done/abort/error")
+      `DV_CHECK_EQ(st[3:0], hardware_handshake ? 4'b0001 : 4'b0000,
+                   "Unexpected intermediate busy/done/abort/error")
       csr_rd(ral.cfg_regwen, value);
       `DV_CHECK_EQ(value, prim_mubi_pkg::MuBi4False, "Suspended AES configuration unlocked")
       // These writes must be ignored while the retained crypto state is live.
@@ -132,12 +176,13 @@ class dma_aes_vseq extends dma_base_vseq;
       `DV_CHECK_EQ(value, DstAddr + moved, "AES destination chunk write-back")
       delay($urandom_range(20, 100));
       for (int b = moved; b < n_blocks*16; b++) begin
-        `DV_CHECK_EQ(cfg.mems[OtInternalAddr].read_byte(DstAddr + b), 8'hA5,
+        `DV_CHECK_EQ(cfg.mems[dst_asid_sel].read_byte(DstAddr + b), 8'hA5,
                      "AES wrote beyond the suspended chunk")
       end
       csr_wr(ral.status, 32'h20);
       csr_wr(ral.intr_state, 1 << IntrDmaChunkDone);
-      set_control(op, .initial_transfer(1'b0), .handshake(1'b0), .go(1'b1));
+      if (hardware_handshake) trigger_chunk();
+      else set_control(op, .initial_transfer(1'b0), .handshake(1'b0), .go(1'b1));
     end
   endtask
 
@@ -162,11 +207,12 @@ class dma_aes_vseq extends dma_base_vseq;
       bit [3:0][31:0] pred_tag; int res; bit [7:0][31:0] key;
       bit [31:0] tag_word;
 
-      // Guarantee both ciphers exercise a short final chunk, equal sizes and oversized chunks.
-      if (m < 6) begin
+      // Exercise both pacing modes with short final, equal-sized and oversized chunks.
+      hardware_handshake = m < 12 ? m >= 6 : $urandom_range(0, 1);
+      if (m < 12) begin
         gcm = (m % 2) != 0;
         n_blocks = 5;
-        chunk_blocks = m < 2 ? 2 : (m < 4 ? 5 : 7);
+        chunk_blocks = (m % 6) < 2 ? 2 : ((m % 6) < 4 ? 5 : 7);
         aad_blocks = gcm ? 2 : 0;
       end else begin
         chunk_blocks = $urandom_range(1, n_blocks + 2);
@@ -175,6 +221,8 @@ class dma_aes_vseq extends dma_base_vseq;
       // Randomize the config and publish it. key_len: AES-128/192/256 (one-hot).
       cfg.aes_key_len = (1 << $urandom_range(0, 2));
       cfg.aes_sideload = $urandom_range(0, 1);
+      // PRNG reseed rate: one-hot PER_1/PER_64/PER_8K, exercised so reseed timing varies.
+      cfg.aes_reseed_rate = (1 << $urandom_range(0, 2));
       if (cfg.aes_sideload) begin
         // Sideload: the effective key is the keymgr key driven by the tb; mirror it into cfg so the
         // scoreboard predicts with the same key. The CSR shares are written but ignored by the DUT.
@@ -195,6 +243,11 @@ class dma_aes_vseq extends dma_base_vseq;
       cfg.aes_mode_gcm  = gcm;
       cfg.aes_tag_in    = '{default:0};
 
+      // Route ~1/3 of messages cross-port (OT-internal gather -> SoC scatter); the rest stay on the
+      // OT-internal port. Source stays OT-internal (the range-checked endpoint).
+      src_asid_sel = OtInternalAddr;
+      dst_asid_sel = ($urandom_range(0, 2) == 0) ? SocControlAddr : OtInternalAddr;
+
       // AAD bytes for the reference (the active AAD blocks).
       aad_b = new[aad_blocks*16];
       foreach (aad_b[b]) aad_b[b] = cfg.aes_aad[b/4][(b%4)*8 +: 8];
@@ -210,7 +263,7 @@ class dma_aes_vseq extends dma_base_vseq;
       poll_status(.intr_driven(1'b0), .status(status));
       stop_device();
       `DV_CHECK_EQ(status[StatusError], 1'b0, "AES encrypt errored")
-      mem_read(DstAddr, n_blocks*16, ct_b);   // ciphertext for the round-trip
+      mem_read(dst_asid_sel, DstAddr, n_blocks*16, ct_b);   // ciphertext for the round-trip
 
       if (gcm) begin
         // Check TAG_OUT against the reference, and capture it for the decrypt.
