@@ -116,6 +116,11 @@
       reseed: 15
     }
     {
+      name: dma_partial_size
+      uvm_test_seq: dma_partial_size_vseq
+      reseed: 5
+    }
+    {
       name: dma_range_partial
       uvm_test_seq: dma_range_partial_vseq
       reseed: 1

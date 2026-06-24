@@ -55,6 +55,12 @@ interface dma_cov_if
   logic cfg_sample;
   assign cfg_sample = (ctrl_state_q == DmaAddrSetup);
 
+  // Multi-chunk transfer: chunk smaller than the whole transfer. The write-back path that advances
+  // SRC_ADDR/DST_ADDR between chunks (the one with the inverted increment condition) only matters
+  // here, so increment x wrap must be crossed with this.
+  logic multichunk;
+  assign multichunk = (reg2hw.chunk_data_size.q < reg2hw.total_data_size.q);
+
   // Inclusive-limit boundary relationship per endpoint: the last accessed byte is
   // `addr + chunk_size - 1`, in range iff `<= limit`. 33-bit math avoids wrap. The `at_limit`
   // value (==2'd1) is the exact boundary the off-by-one previously made unreachable.
@@ -247,6 +253,31 @@ interface dma_cov_if
       bins at_limit = {2'd1};
       bins above    = {2'd2};
     }
+
+    // ---- increment x wrap x multichunk (#1). The write-back inversion bit only on the
+    //      incrementing + non-wrapping + multi-chunk arm, which was never crossed before. ----
+    cp_src_increment: coverpoint reg2hw.src_config.increment.q iff (rst_n && cfg_sample && do_read) {
+      bins fixed = {AddrNoIncrement};
+      bins inc   = {AddrIncrement};
+    }
+    cp_src_wrap: coverpoint reg2hw.src_config.wrap.q iff (rst_n && cfg_sample && do_read) {
+      bins no_wrap = {AddrNoWrapChunk};
+      bins wrap    = {AddrWrapChunk};
+    }
+    cp_dst_increment: coverpoint reg2hw.dst_config.increment.q iff (rst_n && cfg_sample && do_write) {
+      bins fixed = {AddrNoIncrement};
+      bins inc   = {AddrIncrement};
+    }
+    cp_dst_wrap: coverpoint reg2hw.dst_config.wrap.q iff (rst_n && cfg_sample && do_write) {
+      bins no_wrap = {AddrNoWrapChunk};
+      bins wrap    = {AddrWrapChunk};
+    }
+    cp_multichunk: coverpoint multichunk iff (rst_n && cfg_sample) {
+      bins single = {1'b0};
+      bins multi  = {1'b1};
+    }
+    cr_src_addr_mode: cross cp_src_increment, cp_src_wrap, cp_multichunk;
+    cr_dst_addr_mode: cross cp_dst_increment, cp_dst_wrap, cp_multichunk;
   endgroup
 
   `DV_FCOV_INSTANTIATE_CG(dma_cfg_cg, en_full_cov)

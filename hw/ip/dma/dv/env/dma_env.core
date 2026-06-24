@@ -53,6 +53,7 @@ filesets:
       - seq_lib/dma_hashing_partial_vseq.sv: {is_include_file: true}
       - seq_lib/dma_overlap_vseq.sv: {is_include_file: true}
       - seq_lib/dma_memset_vseq.sv: {is_include_file: true}
+      - seq_lib/dma_partial_size_vseq.sv: {is_include_file: true}
       - seq_lib/dma_range_partial_vseq.sv: {is_include_file: true}
       - seq_lib/dma_verify_vseq.sv: {is_include_file: true}
       - seq_lib/dma_aes_smoke_vseq.sv: {is_include_file: true}
