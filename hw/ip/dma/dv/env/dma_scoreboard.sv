@@ -18,6 +18,14 @@ class dma_scoreboard extends cip_base_scoreboard #(
   bit [63:0] exp_src_addr;   // Expected address for next source request
   bit [63:0] exp_dst_addr;   // Expected address for next destination request
 
+  // Predicted SRC_ADDR/DST_ADDR register post-state after the DUT's automatic end-of-transfer
+  // address write-back, plus a flag set only once a clean (non-abort, non-error) transfer has
+  // completed and the registers hold this predictable value. Checked on CSR reads of the address
+  // registers, which are otherwise unpredictable while a transfer is mid-flight.
+  bit [63:0] exp_src_addr_reg;
+  bit [63:0] exp_dst_addr_reg;
+  bit        addr_wb_pred_valid;
+
   // Internal copy of the DMA configuration information for use in validating TL-UL transactions
   // This copy is updated in the `process_reg_write` function below
   dma_seq_item dma_config;
@@ -287,6 +295,22 @@ class dma_scoreboard extends cip_base_scoreboard #(
       end
       wdata = wdata >> 8;
     end
+  endfunction
+
+  // Model the DUT's automatic SRC_ADDR/DST_ADDR write-back at the end of a clean transfer. Each
+  // chunk advances the address register by the bytes actually moved in that chunk, so after the
+  // whole transfer the register holds `base + total_data_size` - but only when the address
+  // increments and does not wrap per chunk, and only for the side that actually accesses memory
+  // (memset has no source read, verify has no destination write, so those registers are not
+  // written back). Call only on a clean full-transfer completion.
+  function void predict_addr_writeback();
+    exp_src_addr_reg = dma_config.src_addr +
+        ((dma_config.op_reads()  && dma_config.src_addr_inc && !dma_config.src_chunk_wrap) ?
+         64'(dma_config.total_data_size) : 64'd0);
+    exp_dst_addr_reg = dma_config.dst_addr +
+        ((dma_config.op_writes() && dma_config.dst_addr_inc && !dma_config.dst_chunk_wrap) ?
+         64'(dma_config.total_data_size) : 64'd0);
+    addr_wb_pred_valid = 1'b1;
   endfunction
 
   // Predict the address to which the next access of this type should occur.
@@ -634,9 +658,20 @@ class dma_scoreboard extends cip_base_scoreboard #(
         // Whether an interrupt is expected also depends upon whether it is enabled.
         // Have we yet completed the entire transfer?
         if (num_bytes_transferred >= dma_config.total_data_size) begin
-          `uvm_info(`gfn, "Final write completed", UVM_MEDIUM)
-          predict_interrupts(WriteToDoneLatency, 1 << IntrDmaDone, intr_enable);
-          intr_state_hw[IntrDmaDone] = 1'b1;
+          if (dma_config.is_aes && cfg.aes_scb_predict && cfg.aes_expect_tag_fail) begin
+            // AES tamper: the final write completes but the tag check then fails, so the DUT errors
+            // and never raises DONE (dma.sv DmaAesTag). Predict ERROR, not DONE; no write-back.
+            `uvm_info(`gfn, "Final write completed (AES tag mismatch expected)", UVM_MEDIUM)
+            predict_interrupts(WriteToDoneLatency, 1 << IntrDmaError, intr_enable);
+            intr_state_hw[IntrDmaError] = 1'b1;
+          end else begin
+            `uvm_info(`gfn, "Final write completed", UVM_MEDIUM)
+            predict_interrupts(WriteToDoneLatency, 1 << IntrDmaDone, intr_enable);
+            intr_state_hw[IntrDmaDone] = 1'b1;
+            // The address registers now hold their end-of-transfer write-back value (memory mode
+            // only; handshake address bookkeeping uses the existing accept-on-read behaviour).
+            if (!dma_config.handshake) predict_addr_writeback();
+          end
         end else begin
           `uvm_info(`gfn, "Chunk writing completed", UVM_MEDIUM)
           predict_interrupts(WriteToDoneLatency, 1 << IntrDmaChunkDone, intr_enable);
@@ -651,6 +686,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
           `uvm_info(`gfn, "Final read completed (verify)", UVM_MEDIUM)
           predict_interrupts(WriteToDoneLatency, 1 << IntrDmaDone, intr_enable);
           intr_state_hw[IntrDmaDone] = 1'b1;
+          if (!dma_config.handshake) predict_addr_writeback();
         end else begin
           `uvm_info(`gfn, "Chunk reading completed (verify)", UVM_MEDIUM)
           predict_interrupts(WriteToDoneLatency, 1 << IntrDmaChunkDone, intr_enable);
@@ -762,6 +798,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
     src_queue.delete();
     dst_queue.delete();
     operation_in_progress = 1'b0;
+    addr_wb_pred_valid = 1'b0;
     num_bytes_read = 0;
     exp_bytes_transferred = 0;
     num_bytes_transferred = 0;
@@ -1095,20 +1132,26 @@ class dma_scoreboard extends cip_base_scoreboard #(
           end
         end
       end
+      // A software write to any address register overrides the auto-write-back post-state, so the
+      // prediction is no longer valid until the next transfer completes.
       "src_addr_lo": begin
         dma_config.src_addr[31:0] = item.a_data;
+        addr_wb_pred_valid = 1'b0;
         `uvm_info(`gfn, $sformatf("Got src_addr_lo = %0x", dma_config.src_addr[31:0]), UVM_HIGH)
       end
       "src_addr_hi": begin
         dma_config.src_addr[63:32] = item.a_data;
+        addr_wb_pred_valid = 1'b0;
         `uvm_info(`gfn, $sformatf("Got src_addr_hi = %0x", dma_config.src_addr[63:32]), UVM_HIGH)
       end
       "dst_addr_lo": begin
         dma_config.dst_addr[31:0] = item.a_data;
+        addr_wb_pred_valid = 1'b0;
         `uvm_info(`gfn, $sformatf("Got dst_addr_lo = %0x", dma_config.dst_addr[31:0]), UVM_HIGH)
       end
       "dst_addr_hi": begin
         dma_config.dst_addr[63:32] = item.a_data;
+        addr_wb_pred_valid = 1'b0;
         `uvm_info(`gfn, $sformatf("Got dst_addr_hi = %0x", dma_config.dst_addr[63:32]), UVM_HIGH)
       end
       "dst_config": begin
@@ -1309,10 +1352,15 @@ class dma_scoreboard extends cip_base_scoreboard #(
           // Expect digest to be cleared even for rejected configurations
           exp_digest = '{default:0};
           // Clear status variables
+          addr_wb_pred_valid = 1'b0;
           num_bytes_read = 0;
           num_bytes_transferred = 0;
           num_bytes_checked = 0;
           fifo_intr_cleared = 0;
+          // Flush any stale TL-UL items from a prior aborted transfer so their late responses
+          // don't get attributed to this new transfer.
+          src_queue.delete();
+          dst_queue.delete();
           // Expectation of bytes transferred before the first 'Chunk Done' or 'Done' signal
           exp_bytes_transferred = dma_config.handshake ? dma_config.total_data_size
                                                        : dma_config.chunk_size(0);
@@ -1551,12 +1599,35 @@ class dma_scoreboard extends cip_base_scoreboard #(
         void'(csr.predict(.value(item.d_data), .kind(UVM_PREDICT_READ)));
         do_read_check = 1'b0;
       end
-      // These configuration registers are updated automatically by the DUT, so they cannot be
-      // predicted easily.
-      "src_addr_lo",
-      "src_addr_hi",
-      "dst_addr_lo",
-      "dst_addr_hi" : begin
+      // These registers are auto-updated by the DUT during a transfer (the per-chunk address
+      // write-back), so they are only predictable once a clean transfer has completed
+      // (`addr_wb_pred_valid`). When valid, check the post-transfer value against the model; the
+      // DUT value is always accepted into the mirror so later reads stay consistent.
+      "src_addr_lo": begin
+        if (addr_wb_pred_valid) begin
+          `DV_CHECK_EQ(item.d_data, exp_src_addr_reg[31:0], "SRC_ADDR_LO write-back mismatch")
+        end
+        void'(csr.predict(.value(item.d_data), .kind(UVM_PREDICT_READ)));
+        do_read_check = 1'b0;
+      end
+      "src_addr_hi": begin
+        if (addr_wb_pred_valid) begin
+          `DV_CHECK_EQ(item.d_data, exp_src_addr_reg[63:32], "SRC_ADDR_HI write-back mismatch")
+        end
+        void'(csr.predict(.value(item.d_data), .kind(UVM_PREDICT_READ)));
+        do_read_check = 1'b0;
+      end
+      "dst_addr_lo": begin
+        if (addr_wb_pred_valid) begin
+          `DV_CHECK_EQ(item.d_data, exp_dst_addr_reg[31:0], "DST_ADDR_LO write-back mismatch")
+        end
+        void'(csr.predict(.value(item.d_data), .kind(UVM_PREDICT_READ)));
+        do_read_check = 1'b0;
+      end
+      "dst_addr_hi": begin
+        if (addr_wb_pred_valid) begin
+          `DV_CHECK_EQ(item.d_data, exp_dst_addr_reg[63:32], "DST_ADDR_HI write-back mismatch")
+        end
         void'(csr.predict(.value(item.d_data), .kind(UVM_PREDICT_READ)));
         do_read_check = 1'b0;
       end

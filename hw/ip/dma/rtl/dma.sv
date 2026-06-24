@@ -655,6 +655,8 @@ module dma
   // Range-check span: transfer-word width for fixed-address, remaining bytes otherwise.
   logic [TRANSFER_BYTES_WIDTH-1:0] xfer_width_bytes;
   logic [TRANSFER_BYTES_WIDTH-1:0] src_range_span, dst_range_span;
+  // Bytes the current beat actually commits (full width, or the partial final-beat remainder).
+  logic [TRANSFER_BYTES_WIDTH-1:0] beat_bytes;
   logic                            capture_transfer_byte;
   prim_flop_en #(
     .Width(TRANSFER_BYTES_WIDTH)
@@ -1418,8 +1420,8 @@ module dma
               end else begin
                 // Verify: the read itself commits the beat because there is no destination
                 // write. Hashing is mandatory for this legal control combination.
-                transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
-                chunk_byte_d          = chunk_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+                transfer_byte_d       = transfer_byte_q + beat_bytes;
+                chunk_byte_d          = chunk_byte_q + beat_bytes;
                 capture_transfer_byte = 1'b1;
                 capture_chunk_byte    = 1'b1;
 
@@ -1462,8 +1464,8 @@ module dma
               ctrl_state_d          = DmaError;
             end else begin
               // Advance by the number of bytes just transferred
-              transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
-              chunk_byte_d          = chunk_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+              transfer_byte_d       = transfer_byte_q + beat_bytes;
+              chunk_byte_d          = chunk_byte_q + beat_bytes;
               capture_transfer_byte = 1'b1;
               capture_chunk_byte    = 1'b1;
 
@@ -1577,8 +1579,10 @@ module dma
               next_error[DmaBusErr] = 1'b1;
               ctrl_state_d          = DmaError;
             end else begin
-              transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+              transfer_byte_d       = transfer_byte_q + beat_bytes;
+              chunk_byte_d          = chunk_byte_q + beat_bytes;
               capture_transfer_byte = 1'b1;
+              capture_chunk_byte    = 1'b1;
             end
           end
 
@@ -1654,8 +1658,10 @@ module dma
               next_error[DmaBusErr] = 1'b1;
               ctrl_state_d          = DmaError;
             end else begin
-              transfer_byte_d       = transfer_byte_q + TRANSFER_BYTES_WIDTH'(transfer_width_q);
+              transfer_byte_d       = transfer_byte_q + beat_bytes;
+              chunk_byte_d          = chunk_byte_q + beat_bytes;
               capture_transfer_byte = 1'b1;
+              capture_chunk_byte    = 1'b1;
             end
           end
           if ((burst_wr_issue & write_gnt) & ~(write_rsp_valid & ~write_rsp_error) &
@@ -1885,24 +1891,21 @@ module dma
     // This makes the computation usable both by the serial datapath (which still captures the
     // result) and by the read-ahead burst datapath (which issues from the live position):
     //  - fixed-address mode: always the base address;
-    //  - wrapped increment:  base + offset within the current chunk (resets each chunk);
-    //  - plain increment:    base + total transferred offset (continuous across chunks).
+    //  - incrementing modes: base + offset within the current chunk. The architectural address
+    //    registers are advanced at each chunk boundary, so using the cumulative transfer count
+    //    here would advance twice on every chunk after the first.
     if (!do_read || (reg2hw.src_config.increment.q == AddrNoIncrement)) begin
       src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q};
-    end else if (reg2hw.src_config.wrap.q == AddrWrapChunk) begin
-      src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} + DMA_ADDR_WIDTH'(setup_chunk_byte);
     end else begin
       src_addr_d = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} +
-                   DMA_ADDR_WIDTH'(setup_transfer_byte);
+                   DMA_ADDR_WIDTH'(setup_chunk_byte);
     end
 
     if (!do_write || (reg2hw.dst_config.increment.q == AddrNoIncrement)) begin
       dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q};
-    end else if (reg2hw.dst_config.wrap.q == AddrWrapChunk) begin
-      dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} + DMA_ADDR_WIDTH'(setup_chunk_byte);
     end else begin
       dst_addr_d = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} +
-                   DMA_ADDR_WIDTH'(setup_transfer_byte);
+                   DMA_ADDR_WIDTH'(setup_chunk_byte);
     end
 
     unique case (transfer_width_d)
@@ -2154,6 +2157,11 @@ module dma
   assign remaining_bytes = (transfer_remaining_bytes < chunk_remaining_bytes) ?
                             transfer_remaining_bytes : chunk_remaining_bytes;
 
+  // Match the byte-enable clamp on the final partial beat so counters and address write-back
+  // reflect the bytes actually transferred rather than rounding up to a full-width word.
+  assign beat_bytes = (remaining_bytes < TRANSFER_BYTES_WIDTH'(transfer_width_q)) ?
+                      remaining_bytes : TRANSFER_BYTES_WIDTH'(transfer_width_q);
+
   // Range-check span per endpoint: a fixed (non-incrementing) address only ever accesses the single
   // transfer word [addr, addr+width-1]; an incrementing address spans the chunk
   // [addr, addr+remaining_bytes-1] (a wrapping chunk re-uses that span each chunk). Using the chunk
@@ -2217,12 +2225,12 @@ module dma
     hw2reg.cfg_regwen.d = prim_mubi_pkg::mubi4_bool_to_mubi(
         !(reg2hw.status.busy.q || aes_session_q));
 
-    // When we would update the register, we would update it with the current transferred number of
-    // bytes of the current chunk
+    // Advance by the bytes actually moved in the completed chunk. This differs from the programmed
+    // chunk size for a partial final chunk.
     new_dst_addr = {reg2hw.dst_addr_hi.q, reg2hw.dst_addr_lo.q} +
-                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q);
+                    DMA_ADDR_WIDTH'(chunk_byte_d);
     new_src_addr = {reg2hw.src_addr_hi.q, reg2hw.src_addr_lo.q} +
-                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q);
+                    DMA_ADDR_WIDTH'(chunk_byte_d);
 
     // If we are in multi-chunk mode, we need to update the register addresses since they are needed
     // for the next chunk. Do this only when going back to Idle and when we are incrementing the
@@ -2233,13 +2241,13 @@ module dma
       // Memset (no read) keeps `src_addr_lo` as the fill pattern; writing back the chunk-advanced
       // source address would corrupt it, so suppress the source write-back.
       if (do_read &&
-          reg2hw.src_config.increment.q == AddrNoIncrement &&
+          reg2hw.src_config.increment.q == AddrIncrement &&
           reg2hw.src_config.wrap.q == AddrNoWrapChunk) begin
         update_src_addr_reg = 1'b1;
       end
       // Verify (no write) never advances a destination address, so suppress its write-back.
       if (do_write &&
-          reg2hw.dst_config.increment.q == AddrNoIncrement &&
+          reg2hw.dst_config.increment.q == AddrIncrement &&
           reg2hw.dst_config.wrap.q == AddrNoWrapChunk) begin
         update_dst_addr_reg = 1'b1;
       end

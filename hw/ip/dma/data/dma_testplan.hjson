@@ -373,6 +373,28 @@
         tests: ["dma_memset"]
       }
       {
+        name: dma_partial_size
+        desc: '''
+              Directed memory-to-memory copies whose size is not a multiple of the chunk size and/or
+              the transfer width, exercising the automatic SRC_ADDR/DST_ADDR write-back on partial
+              final chunks and partial final beats.
+
+              Stimulus:
+              - Plain copies (increment, no wrap) with total_data_size constrained so that either the
+                final beat is partial (total not a multiple of the 4-byte transfer width) or the
+                final chunk is partial (chunk size does not divide the total), e.g. total=98/chunk=64
+                and total=100/chunk=64.
+
+              Checking:
+              - After each clean transfer the address registers must equal base + total_data_size,
+                i.e. advanced by the bytes actually moved, not rounded up to a whole chunk or whole
+                bus word. Checked both by the scoreboard's address write-back prediction and by an
+                independent read-back in the sequence.
+              '''
+        stage: V2
+        tests: ["dma_partial_size"]
+      }
+      {
         name: dma_range_partial
         desc: '''
               Enabled-memory-range check on a legal final partial chunk. The DmaAddrSetup range
