@@ -795,9 +795,11 @@ module dma
     .q_o   ( sha2_hash_done_q )
   );
 
-  // The SHA engine requires the message length in bits
+  // The SHA engine requires the message length in bits. Widen the 32-bit total_data_size to 64 bits
+  // BEFORE the <<3, otherwise the shift is evaluated at 32-bit and the top 3 bits are lost - giving a
+  // wrong length (and thus wrong digest) for hashed transfers >= 512 MiB.
   logic [63:0] sha2_message_len_bits;
-  assign sha2_message_len_bits = reg2hw.total_data_size.q << 3;
+  assign sha2_message_len_bits = 64'(reg2hw.total_data_size.q) << 3;
 
   // Translate the digest selector to the SHA2 digest mode
   always_comb begin
@@ -2305,14 +2307,6 @@ module dma
     // Clear the `control.abort` bit once we have handled the abort request
     hw2reg.control.abort.de = hw2reg.status.aborted.de;
     hw2reg.control.abort.d  = 1'b0;
-
-    // Clear the SHA2 digests if the SHA2 valid flag is cleared (RW1C)
-    if (reg2hw.status.sha2_digest_valid.qe & reg2hw.status.sha2_digest_valid.q) begin
-      for (int i = 0; i < NR_SHA_DIGEST_ELEMENTS; i++) begin
-        hw2reg.sha2_digest[i].de = 1'b0;
-        hw2reg.sha2_digest[i].d  = '0;
-      end
-    end
 
     // Clear the error code if the error flag is cleared (RW1C)
     if (reg2hw.status.error.qe & reg2hw.status.error.q) begin
