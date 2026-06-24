@@ -243,9 +243,11 @@ class dma_base_vseq extends cip_base_vseq #(
     // Configure Source model
     if (dma_config.get_read_fifo_en()) begin
       // Enable read FIFO mode in models
+      // When addr_inc=0 (fixed address), force wrap=1 so the FIFO model keeps exp_addr fixed.
       set_model_src_fifo_mode(dma_config.src_asid, dma_config.src_addr,
                               dma_config.per_transfer_width, dma_config.chunk_data_size,
-                              dma_config.src_chunk_wrap, offset, chunk_size);
+                              dma_config.src_chunk_wrap | !dma_config.src_addr_inc,
+                              offset, chunk_size);
     end else begin
       // The source address depends upon the configuration; chunks may overlap each other.
       bit [63:0] src_addr = dma_config.src_addr;
@@ -267,9 +269,12 @@ class dma_base_vseq extends cip_base_vseq #(
       end
 
       // Enable write FIFO mode in models
+      // When addr_inc=0 (fixed address), force wrap=1 so the FIFO model keeps exp_addr fixed
+      // rather than advancing it by chunk_size each chunk.
       set_model_dst_fifo_mode(dma_config.dst_asid, dma_config.dst_addr,
                               dma_config.per_transfer_width, dma_config.chunk_data_size,
-                              dma_config.dst_chunk_wrap, offset, max_size);
+                              dma_config.dst_chunk_wrap | !dma_config.dst_addr_inc,
+                              offset, max_size);
     end
 
     // Return the updated byte offset within the transfer

@@ -22,7 +22,10 @@ interface dma_cov_if
   input dma_digest_e     digest_sel,
   // Combo-reject: a CONTROL field combination raising DmaOpcodeErr in DmaAddrSetup.
   input                  set_error_code,
-  input [DmaErrLast-1:0] next_error
+  input [DmaErrLast-1:0] next_error,
+  // Actual length of the chunk being set up = min(total remaining, chunk_data_size); shorter than
+  // chunk_data_size for the final chunk of a transfer whose total is not a chunk multiple.
+  input [31:0]           remaining_bytes
 );
   `include "dv_fcov_macros.svh"
 
@@ -42,6 +45,44 @@ interface dma_cov_if
   // A CONTROL field combination is being rejected as DmaOpcodeErr this cycle.
   logic combo_reject;
   assign combo_reject = set_error_code && next_error[DmaOpcodeErr];
+
+  // ----------------------------------------------------------------------------------------------
+  // Configuration coverage. These close the holes that hid three review bugs: the multi-chunk
+  // SRC/DST address write-back inversion, the inclusive-limit off-by-one, and the 13-bit GCM
+  // block-count truncation. They are sampled in DmaAddrSetup, where the programmed CONTROL /
+  // address / size / range fields are evaluated for the (about-to-launch) transfer.
+  // ----------------------------------------------------------------------------------------------
+  logic cfg_sample;
+  assign cfg_sample = (ctrl_state_q == DmaAddrSetup);
+
+  // Inclusive-limit boundary relationship per endpoint: the last accessed byte is
+  // `addr + chunk_size - 1`, in range iff `<= limit`. 33-bit math avoids wrap. The `at_limit`
+  // value (==2'd1) is the exact boundary the off-by-one previously made unreachable.
+  logic [32:0] range_lim_ext, src_last_byte, dst_last_byte;
+  assign range_lim_ext = {1'b0, reg2hw.enabled_memory_range_limit.q};
+  assign src_last_byte = {1'b0, reg2hw.src_addr_lo.q} + {1'b0, reg2hw.chunk_data_size.q} - 33'd1;
+  assign dst_last_byte = {1'b0, reg2hw.dst_addr_lo.q} + {1'b0, reg2hw.chunk_data_size.q} - 33'd1;
+  logic [1:0] src_end_rel, dst_end_rel;
+  assign src_end_rel = (src_last_byte <  range_lim_ext) ? 2'd0 :
+                       (src_last_byte == range_lim_ext) ? 2'd1 : 2'd2;
+  assign dst_end_rel = (dst_last_byte <  range_lim_ext) ? 2'd0 :
+                       (dst_last_byte == range_lim_ext) ? 2'd1 : 2'd2;
+
+  // Final-partial-chunk boundary. The ACTUAL last byte of the chunk being set up is
+  // `addr + remaining_bytes - 1`; for the final chunk of a non-multiple transfer remaining_bytes is
+  // shorter than chunk_data_size, so this measures the inclusive-limit boundary for the genuine
+  // partial final chunk - the case the per-chunk range check must accept by its actual length
+  // (distinct from the full-chunk boundary in src/dst_end_vs_limit above).
+  logic        partial_final_chunk;
+  assign partial_final_chunk = (remaining_bytes < reg2hw.chunk_data_size.q);
+  logic [32:0] src_actual_last_byte, dst_actual_last_byte;
+  assign src_actual_last_byte = {1'b0, reg2hw.src_addr_lo.q} + {1'b0, remaining_bytes} - 33'd1;
+  assign dst_actual_last_byte = {1'b0, reg2hw.dst_addr_lo.q} + {1'b0, remaining_bytes} - 33'd1;
+  logic [1:0] src_actual_end_rel, dst_actual_end_rel;
+  assign src_actual_end_rel = (src_actual_last_byte <  range_lim_ext) ? 2'd0 :
+                              (src_actual_last_byte == range_lim_ext) ? 2'd1 : 2'd2;
+  assign dst_actual_end_rel = (dst_actual_last_byte <  range_lim_ext) ? 2'd0 :
+                              (dst_actual_last_byte == range_lim_ext) ? 2'd1 : 2'd2;
 
   covergroup dma_fsm_cg @(posedge clk);
     option.per_instance = 1;
@@ -171,5 +212,43 @@ interface dma_cov_if
   endgroup
 
   `DV_FCOV_INSTANTIATE_CG(dma_fsm_cg, en_full_cov)
+
+  covergroup dma_cfg_cg @(posedge clk);
+    option.per_instance = 1;
+    option.name = "dma_cfg_cg";
+
+    // ---- Inclusive-limit boundary (#2). `at_limit` is the end==limit case the off-by-one hid. ----
+    // Gated per side: memset has no source read, verify has no destination write.
+    cp_src_end_vs_limit: coverpoint src_end_rel iff (rst_n && cfg_sample && do_read) {
+      bins below    = {2'd0};
+      bins at_limit = {2'd1};
+      bins above    = {2'd2};
+    }
+    cp_dst_end_vs_limit: coverpoint dst_end_rel iff (rst_n && cfg_sample && do_write) {
+      bins below    = {2'd0};
+      bins at_limit = {2'd1};
+      bins above    = {2'd2};
+    }
+
+    // ---- Final-partial-chunk boundary. Sampled only when the chunk being set up is the shorter
+    //      final chunk (remaining_bytes < chunk_data_size). The `at_limit` bin is the key case the
+    //      per-chunk range check must accept by its actual length: a partial final chunk ending
+    //      exactly on the inclusive limit (a full-chunk computation would overshoot). `above` is the
+    //      rejected (out-of-range) partial chunk. ----
+    cp_src_partial_end: coverpoint src_actual_end_rel
+        iff (rst_n && cfg_sample && do_read && partial_final_chunk) {
+      bins below    = {2'd0};
+      bins at_limit = {2'd1};
+      bins above    = {2'd2};
+    }
+    cp_dst_partial_end: coverpoint dst_actual_end_rel
+        iff (rst_n && cfg_sample && do_write && partial_final_chunk) {
+      bins below    = {2'd0};
+      bins at_limit = {2'd1};
+      bins above    = {2'd2};
+    }
+  endgroup
+
+  `DV_FCOV_INSTANTIATE_CG(dma_cfg_cg, en_full_cov)
 
 endinterface

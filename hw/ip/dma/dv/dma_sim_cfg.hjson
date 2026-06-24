@@ -116,6 +116,11 @@
       reseed: 15
     }
     {
+      name: dma_range_partial
+      uvm_test_seq: dma_range_partial_vseq
+      reseed: 1
+    }
+    {
       name: dma_aes_smoke
       uvm_test_seq: dma_aes_smoke_vseq
       reseed: 1

@@ -18,6 +18,7 @@ module dma_cov_bind;
     .do_write          (do_write),
     .digest_sel        (digest_sel),
     .set_error_code    (set_error_code),
-    .next_error        (next_error)
+    .next_error        (next_error),
+    .remaining_bytes   (remaining_bytes)
   );
 endmodule
