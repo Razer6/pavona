@@ -90,6 +90,15 @@ interface dma_cov_if
   assign dst_actual_end_rel = (dst_actual_last_byte <  range_lim_ext) ? 2'd0 :
                               (dst_actual_last_byte == range_lim_ext) ? 2'd1 : 2'd2;
 
+  // Inline-AES qualifiers and 16-byte block count (= total_data_size / 16). The GCM length / phase
+  // tracking carries this count in a 13-bit field, so > 8191 blocks truncates and must be rejected.
+  logic is_aes, is_gcm;
+  assign is_aes = (dma_aes_op_e'(reg2hw.control.aes_op.q) == DmaAesOpEnc) ||
+                  (dma_aes_op_e'(reg2hw.control.aes_op.q) == DmaAesOpDec);
+  assign is_gcm = is_aes && reg2hw.control.aes_mode.q;
+  logic [27:0] aes_blocks;
+  assign aes_blocks = reg2hw.total_data_size.q[31:4];
+
   covergroup dma_fsm_cg @(posedge clk);
     option.per_instance = 1;
     option.name = "dma_fsm_cg";
@@ -278,6 +287,19 @@ interface dma_cov_if
     }
     cr_src_addr_mode: cross cp_src_increment, cp_src_wrap, cp_multichunk;
     cr_dst_addr_mode: cross cp_dst_increment, cp_dst_wrap, cp_multichunk;
+
+    // ---- GCM 16-byte block-count magnitude (#3). Buckets reachable by current stimulus plus the
+    //      directed boundary cases. The mid range (> ~256 blocks) is impractical to drive as a real
+    //      transfer; both ends of the 13-bit boundary are binned: `max_valid` (exactly 8191, the
+    //      largest legal count) and `overflow` (8192+, must be rejected - directed
+    //      `gcm_blocks_overflow` test in dma_aes_error_vseq). ----
+    cp_gcm_blocks: coverpoint aes_blocks iff (rst_n && cfg_sample && is_gcm) {
+      bins one       = {28'd1};
+      bins few       = {[28'd2:28'd8]};
+      bins many      = {[28'd9:28'd64]};
+      bins max_valid = {28'd8191};
+      bins overflow  = {[28'd8192:$]};
+    }
   endgroup
 
   `DV_FCOV_INSTANTIATE_CG(dma_cfg_cg, en_full_cov)
