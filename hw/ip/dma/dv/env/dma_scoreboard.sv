@@ -183,7 +183,7 @@ class dma_scoreboard extends cip_base_scoreboard #(
     `uvm_info(`gfn, $sformatf("%s access to 0x%0x, exp 0x%0x, fixed_addr %d, range_restricted %d",
                               check_type, addr, exp_addr, fixed_addr, range_restricted), UVM_DEBUG)
     `uvm_info(`gfn,
-              $sformatf("  (%s range is [0x%0x,0x%0x) and DMA-enabled range is [0x%0x,0x%0x))",
+              $sformatf("  (%s range is [0x%0x,0x%0x) and DMA-enabled range is [0x%0x,0x%0x])",
                         check_type, range_start, range_end,
                         dma_config.mem_range_base, dma_config.mem_range_limit), UVM_DEBUG)
 
@@ -210,10 +210,12 @@ class dma_scoreboard extends cip_base_scoreboard #(
       end
     end
 
-    // Check that this address lies within the DMA-enabled memory range, where applicable.
+    // Check that this address lies within the DMA-enabled memory range, where applicable. The
+    // limit is INCLUSIVE (the last accessible byte is at `mem_range_limit`), matching the RTL/HJSON,
+    // so the last 4-byte-aligned beat may start exactly at the limit.
     if (range_restricted) begin
-      `DV_CHECK(addr >= dma_config.mem_range_base && addr < dma_config.mem_range_limit,
-                $sformatf("%s addr 0x%0x does not lie within the DMA-enabled range [0x%0x,0x%0x)",
+      `DV_CHECK(addr >= dma_config.mem_range_base && addr <= dma_config.mem_range_limit,
+                $sformatf("%s addr 0x%0x does not lie within the DMA-enabled range [0x%0x,0x%0x]",
                           check_type, addr, dma_config.mem_range_base,
                           dma_config.mem_range_limit))
     end
@@ -263,11 +265,12 @@ class dma_scoreboard extends cip_base_scoreboard #(
     bit [31:0] offset = num_bytes_transferred;
     bit memset = !dma_config.op_reads();
 
-    // Inline AES: the directed KAT smoke self-checks (scoreboard prediction disabled). When
-    // prediction is enabled, an expected decrypt tag mismatch poisons the destination (the transfer
-    // errors) - skip; the vseq checks STATUS.tag_failed / done.
+    // Inline AES: the directed KAT smoke self-checks (prediction disabled).
     if (dma_config.is_aes && !cfg.aes_scb_predict) return;
-    if (dma_config.is_aes && aes_pred_res < 0) return;
+    // Skip when cfg.src_data was not populated (the vseq self-checks via memory readback).
+    if (!memset && !dma_config.is_aes && cfg.src_data.size() == 0) return;
+    // A tamper (aes_pred_res < 0) is NOT skipped: plaintext is streamed out before the tag check
+    // (dma.sv DmaAesTag), so the written bytes still equal aes_pred_data. Tag status: see "status".
 
     `uvm_info(`gfn, $sformatf("if_name %s: write addr 0x%0x mask 0x%0x data 0x%0x", if_name,
                               a_addr, item.a_mask, item.a_data), UVM_HIGH)
@@ -310,11 +313,9 @@ class dma_scoreboard extends cip_base_scoreboard #(
         end
       end else begin
         // End of chunk.
-        if (chunk_wrap) begin
-          next_addr = start_addr;  // All chunks start at the same address.
-        end else if (!addr_inc) begin
-          // Chunks do not overlap but all words within a chunk do.
-          next_addr = addr + dma_config.chunk_data_size;
+        if (chunk_wrap || !addr_inc) begin
+          // All chunks start at the same address (wrapping), or the address is fixed.
+          next_addr = start_addr;
         end
       end
     end else begin
@@ -966,10 +967,11 @@ class dma_scoreboard extends cip_base_scoreboard #(
     bit dst_fifo = dma_config.get_write_fifo_en();
 
     // Inline AES: the directed KAT smoke self-checks (prediction disabled). When enabled, the
-    // destination is the DPI-predicted ciphertext/plaintext; an expected decrypt tag mismatch
-    // poisons the destination (the transfer errors) - skip it; the vseq checks the status.
+    // destination is the DPI-predicted ciphertext/plaintext - deterministic even for a tamper
+    // (aes_pred_res < 0), since plaintext is streamed out before the tag check (dma.sv DmaAesTag).
     if (dma_config.is_aes && !cfg.aes_scb_predict) return;
-    if (dma_config.is_aes && aes_pred_res < 0) return;
+    // Skip when cfg.src_data was not populated (the vseq self-checks via memory readback).
+    if (!dma_config.is_aes && cfg.src_data.size() == 0) return;
 
     `uvm_info(`gfn, $sformatf("Checking output data [0x%0x,0x%0x) against 0%0x byte(s) of source",
                               dst_addr, dst_addr + size, size), UVM_MEDIUM)

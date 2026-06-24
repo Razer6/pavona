@@ -650,6 +650,9 @@ module dma
   // Counters selecting which beat the address/BE setup computes (see p_addr_be_setup):
   // either the current registered counts (first beat) or the post-advance counts (folded).
   logic [TRANSFER_BYTES_WIDTH-1:0] setup_transfer_byte, setup_chunk_byte;
+  // Range-check span: transfer-word width for fixed-address, remaining bytes otherwise.
+  logic [TRANSFER_BYTES_WIDTH-1:0] xfer_width_bytes;
+  logic [TRANSFER_BYTES_WIDTH-1:0] src_range_span, dst_range_span;
   logic                            capture_transfer_byte;
   prim_flop_en #(
     .Width(TRANSFER_BYTES_WIDTH)
@@ -1256,11 +1259,16 @@ module dma
             // Source is the range-checked endpoint (e.g. OT -> SoC copy).
             if (PortDesc[src_port_idx].range_check &&
                 (!do_write || !PortDesc[dst_port_idx].range_check) &&
-                  // Out-of-bound check
+                  // Out-of-bound check. The limit is inclusive, so the last accessed byte is
+                  // `addr + src_range_span - 1`; it is in range iff that byte is <= limit.
+                  // `src_range_span` is the actual accessed extent: the transfer-word width for a
+                  // fixed address, else this chunk's real length (= min(total remaining,
+                  // chunk_data_size)). This avoids rejecting a shorter final chunk, or a fixed-address
+                  // FIFO word near the limit, that is genuinely within range.
                   ((reg2hw.src_addr_lo.q > control_q.enabled_memory_range_limit) ||
                   (reg2hw.src_addr_lo.q < control_q.enabled_memory_range_base)   ||
                   ((DMA_ADDR_WIDTH'(reg2hw.src_addr_lo.q) +
-                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
+                    DMA_ADDR_WIDTH'(src_range_span) - DMA_ADDR_WIDTH'(1)) >
                     DMA_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
               next_error[DmaSrcAddrErr] = 1'b1;
             end
@@ -1275,11 +1283,14 @@ module dma
             // Destination is the range-checked endpoint (e.g. SoC -> OT copy).
             if (PortDesc[dst_port_idx].range_check &&
                 (!do_read || !PortDesc[src_port_idx].range_check) &&
-                // Out-of-bound check
+                // Out-of-bound check. The limit is inclusive, so the last accessed byte is
+                // `addr + dst_range_span - 1`; it is in range iff that byte is <= limit.
+                // `dst_range_span` is the actual accessed extent (transfer-word width for a fixed
+                // address, else this chunk's real length); see the source check above.
                 ((reg2hw.dst_addr_lo.q > control_q.enabled_memory_range_limit) ||
                   (reg2hw.dst_addr_lo.q < control_q.enabled_memory_range_base) ||
                   ((DMA_ADDR_WIDTH'(reg2hw.dst_addr_lo.q) +
-                    DMA_ADDR_WIDTH'(reg2hw.chunk_data_size.q)) >
+                    DMA_ADDR_WIDTH'(dst_range_span) - DMA_ADDR_WIDTH'(1)) >
                     DMA_ADDR_WIDTH'(control_q.enabled_memory_range_limit)))) begin
               next_error[DmaDstAddrErr] = 1'b1;
             end
@@ -2139,6 +2150,53 @@ module dma
   assign chunk_remaining_bytes = reg2hw.chunk_data_size.q - setup_chunk_byte;
   assign remaining_bytes = (transfer_remaining_bytes < chunk_remaining_bytes) ?
                             transfer_remaining_bytes : chunk_remaining_bytes;
+
+  // Range-check span per endpoint: a fixed (non-incrementing) address only ever accesses the single
+  // transfer word [addr, addr+width-1]; an incrementing address spans the chunk
+  // [addr, addr+remaining_bytes-1] (a wrapping chunk re-uses that span each chunk). Using the chunk
+  // span for a fixed address would spuriously reject a legal FIFO word near the range limit.
+  assign xfer_width_bytes = TRANSFER_BYTES_WIDTH'(1) << reg2hw.transfer_width.q;
+  assign src_range_span =
+      (reg2hw.src_config.increment.q == AddrNoIncrement) ? xfer_width_bytes : remaining_bytes;
+  assign dst_range_span =
+      (reg2hw.dst_config.increment.q == AddrNoIncrement) ? xfer_width_bytes : remaining_bytes;
+
+  // Byte-enable for one beat: one-hot transfer width (bytes), beat address[1:0], and bytes
+  // remaining (min of chunk and transfer). Shared by the first beat and the next-beat path.
+  function automatic logic [top_pkg::TL_DBW-1:0] dma_compute_be(
+      input logic [2:0]                      xfer_width,
+      input logic [1:0]                      addr_lo,
+      input logic [TRANSFER_BYTES_WIDTH-1:0] remaining);
+    logic [top_pkg::TL_DBW-1:0] be;
+    unique case (xfer_width)
+      3'b001: begin
+        be = top_pkg::TL_DBW'('b0001) << addr_lo;
+      end
+      3'b010: begin
+        if (remaining >= TRANSFER_BYTES_WIDTH'(xfer_width)) begin
+          be = top_pkg::TL_DBW'('b0011) << addr_lo;
+        end else begin
+          be = top_pkg::TL_DBW'('b0001) << addr_lo;
+        end
+      end
+      3'b100: begin
+        if (remaining >= TRANSFER_BYTES_WIDTH'(xfer_width)) begin
+          be = {top_pkg::TL_DBW{1'b1}};
+        end else begin
+          unique case (remaining)
+            TRANSFER_BYTES_WIDTH'('h1): be = top_pkg::TL_DBW'('b0001);
+            TRANSFER_BYTES_WIDTH'('h2): be = top_pkg::TL_DBW'('b0011);
+            TRANSFER_BYTES_WIDTH'('h3): be = top_pkg::TL_DBW'('b0111);
+            default:                    be = top_pkg::TL_DBW'('b1111);
+          endcase
+        end
+      end
+      default: begin
+        be = top_pkg::TL_DBW'('b0000);
+      end
+    endcase
+    return be;
+  endfunction
 
   always_comb begin
     // Because of using the primitives for interrupt handling, the hw2reg registers cannot be

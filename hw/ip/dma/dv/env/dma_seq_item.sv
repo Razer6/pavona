@@ -209,23 +209,26 @@ class dma_seq_item extends uvm_sequence_item;
         if (src_addr_in_range) {
           src_addr >= mem_range_base;
           src_addr <= mem_range_limit;
-          mem_range_limit - src_addr >= chunk_data_size;
+          // The limit is inclusive, so a `size`-byte buffer fits iff `addr + size - 1 <= limit`,
+          // i.e. `limit - addr >= size - 1`. Using `>= size` excludes the valid `end == limit`
+          // boundary and hides the RTL off-by-one.
+          mem_range_limit - src_addr >= chunk_data_size - 1;
           // If wrapping is not used after chunk than the entire transfer must fit within the window
           if (!src_chunk_wrap) {
-            mem_range_limit - src_addr >= total_data_size;
+            mem_range_limit - src_addr >= total_data_size - 1;
           }
         } else {
           // Choose a source address range that lies partially outside the DMA-enabled memory range.
           if (!src_chunk_wrap) {
-            // Choose start address to be too low or end address to be too high.
+            // Choose start address to be too low or end address to be too high (end > limit).
             src_addr < mem_range_base  ||
             src_addr > mem_range_limit ||
-            mem_range_limit - src_addr < total_data_size;
+            mem_range_limit - src_addr < total_data_size - 1;
           } else {
-            // Choose start address to be too low or end address to be too high.
+            // Choose start address to be too low or end address to be too high (end > limit).
             src_addr < mem_range_base  ||
             src_addr > mem_range_limit ||
-            mem_range_limit - src_addr < chunk_data_size;
+            mem_range_limit - src_addr < chunk_data_size - 1;
           }
         }
       }
@@ -253,24 +256,27 @@ class dma_seq_item extends uvm_sequence_item;
         if (dst_addr_in_range) {
           dst_addr >= mem_range_base;
           dst_addr <= mem_range_limit;
-          mem_range_limit - dst_addr >= chunk_data_size;
+          // The limit is inclusive, so a `size`-byte buffer fits iff `addr + size - 1 <= limit`,
+          // i.e. `limit - addr >= size - 1`. Using `>= size` excludes the valid `end == limit`
+          // boundary and hides the RTL off-by-one.
+          mem_range_limit - dst_addr >= chunk_data_size - 1;
           // If wrapping is not used after chunk than the entire transfer must fit within the window
           if (!dst_chunk_wrap) {
-            mem_range_limit - dst_addr >= total_data_size;
+            mem_range_limit - dst_addr >= total_data_size - 1;
           }
         } else {
           // Choose a destination address range that lies partially outside the DMA-enabled memory
           // range.
           if (!dst_chunk_wrap) {
-            // Choose start address to be too low or end address to be too high.
+            // Choose start address to be too low or end address to be too high (end > limit).
             dst_addr < mem_range_base  ||
             dst_addr > mem_range_limit ||
-            mem_range_limit - dst_addr < total_data_size;
+            mem_range_limit - dst_addr < total_data_size - 1;
           } else {
-            // Choose start address to be too low or end address to be too high.
+            // Choose start address to be too low or end address to be too high (end > limit).
             dst_addr < mem_range_base  ||
             dst_addr > mem_range_limit ||
-            mem_range_limit - dst_addr < chunk_data_size;
+            mem_range_limit - dst_addr < chunk_data_size - 1;
           }
         }
       }
@@ -311,7 +317,10 @@ class dma_seq_item extends uvm_sequence_item;
   constraint total_data_size_c {
     solve mem_range_limit before total_data_size;
     if (valid_dma_config) {
-      total_data_size <= mem_range_limit - mem_range_base;
+      // The range is inclusive, so the window holds `limit - base + 1` bytes. Phrased as
+      // `limit - base >= size - 1` (overflow-safe, matching the address constraints) so the exact
+      // full-window transfer (end == limit) is reachable.
+      mem_range_limit - mem_range_base >= total_data_size - 1;
       total_data_size > 0;
     }
   }
@@ -319,7 +328,8 @@ class dma_seq_item extends uvm_sequence_item;
   constraint chunk_data_size_c {
     solve mem_range_limit before chunk_data_size;
     if (valid_dma_config) {
-      chunk_data_size <= mem_range_limit - mem_range_base;
+      // Inclusive window (see total_data_size_c): `limit - base + 1` bytes.
+      mem_range_limit - mem_range_base >= chunk_data_size - 1;
       chunk_data_size > 0;
     }
     if (handshake) {
@@ -379,9 +389,9 @@ class dma_seq_item extends uvm_sequence_item;
     // Set solver order to make sure mem range limit is randomized correctly in case
     // valid_dma_config is set.
     solve mem_range_base before mem_range_limit;
-    // For valid DMA config, [mem_range_base, mem_range_limit) describes the addressable memory
-    // window, but it need not always be enabled, and only applies to transfers crossing the divide
-    // (importing to/exporting from OT)
+    // For valid DMA config, [mem_range_base, mem_range_limit] describes the addressable memory
+    // window (both ends inclusive), but it need not always be enabled, and only applies to transfers
+    // crossing the divide (importing to/exporting from OT)
     if (valid_dma_config && mem_range_valid) {
       // Note: The DMA controller insists upon checking that a valid range has been specified
       // before it will accept any operation.
@@ -535,19 +545,22 @@ class dma_seq_item extends uvm_sequence_item;
     `uvm_info(`gfn, $sformatf("Checking configuration (%s)", reason), UVM_MEDIUM)
 
     // Ascertain the size of the in-memory buffer(s).
+    // Memory footprint of each endpoint, matching the RTL range check: a wrapping chunk re-uses the
+    // same chunk_data_size window; a fixed (non-incrementing) address only ever accesses the single
+    // transfer word, regardless of wrap (the RTL uses the transfer-word width for that case).
     src_memory_range = total_data_size;
     if (src_chunk_wrap) begin
       src_memory_range = chunk_data_size;  // All chunks overlap each other
-      if (!src_addr_inc) begin
-        src_memory_range = 4;
-      end
+    end
+    if (!src_addr_inc) begin
+      src_memory_range = transfer_width_to_num_bytes(per_transfer_width);
     end
     dst_memory_range = total_data_size;
     if (dst_chunk_wrap) begin
-      dst_memory_range = chunk_data_size;  // All chunks overlaps each other
-      if (!dst_addr_inc) begin
-        dst_memory_range = 4;
-      end
+      dst_memory_range = chunk_data_size;  // All chunks overlap each other
+    end
+    if (!dst_addr_inc) begin
+      dst_memory_range = transfer_width_to_num_bytes(per_transfer_width);
     end
 
     // SoC System bus is full 64-bit (wide `dma_tl_agent`): no 4GiB-window restriction applied.

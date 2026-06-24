@@ -373,6 +373,46 @@
         tests: ["dma_memset"]
       }
       {
+        name: dma_range_partial
+        desc: '''
+              Enabled-memory-range check on a legal final partial chunk. The DmaAddrSetup range
+              check must use the actual length of the current chunk, not the programmed
+              chunk_data_size; otherwise the final chunk of a transfer whose total is not a multiple
+              of the chunk size is wrongly checked as a full chunk and a legal access whose true end
+              is within the range is rejected with DmaSrcAddrErr/DmaDstAddrErr.
+
+              This is a directed test because the generic seq_item range constraints only require the
+              full chunk and the whole transfer to fit from the *original* address, and leave
+              generous range slack, so they essentially never generate the tight boundary where the
+              full-chunk-rounded end of the final chunk crosses the (inclusive) limit.
+
+              Stimulus (incrementing path):
+              - Cross-port copies with exactly one range-checked endpoint, programmed directly so the
+                enabled range ends exactly at the transfer's last byte (limit == base + total - 1)
+                while chunk_data_size > total_data_size (a single chunk whose full-chunk-rounded end
+                exceeds the limit). Run for both the source-checked (OT->SoC) and destination-checked
+                (SoC->OT) directions, with total values that are also not width multiples.
+
+              Stimulus (fixed-address / no-increment path):
+              - The same range span fix applies when an endpoint does not increment its address. A
+                fixed address is a FIFO endpoint in DV, so these run through the standard model flow
+                (configure_mem_model) with the range-checked OT endpoint fixed and the enabled range
+                tightened to exactly one transfer word (limit == base + width - 1). The endpoint
+                reuses that one word for the whole transfer, so the access is legal, but the pre-fix
+                check sized the span from the remaining transfer bytes and rejected it. Run for both
+                fixed-source (OT FIFO -> SoC memory) and fixed-destination (SoC memory -> OT FIFO).
+
+              Checking:
+              - Each transfer must complete with STATUS.done and no error, and ERROR_CODE must show
+                neither src_addr_error nor dst_addr_error. On the unfixed RTL the range check raises a
+                spurious address error. Data behavior: the incrementing and fixed-source cases check
+                the destination data matches the source explicitly; the fixed-destination case relies
+                on the scoreboard checking the gathered FIFO stream against the source.
+              '''
+        stage: V2
+        tests: ["dma_range_partial"]
+      }
+      {
         name: dma_verify
         desc: '''
               Directed test for the verify operation (read_en=1, write_en=0, digest=sha256/384/512).
