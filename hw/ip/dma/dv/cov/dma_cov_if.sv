@@ -25,7 +25,10 @@ interface dma_cov_if
   input [DmaErrLast-1:0] next_error,
   // Actual length of the chunk being set up = min(total remaining, chunk_data_size); shorter than
   // chunk_data_size for the final chunk of a transfer whose total is not a chunk multiple.
-  input [31:0]           remaining_bytes
+  input [31:0]           remaining_bytes,
+  // Abort request and per-port outstanding-response summary, for abort-quiesce coverage.
+  input                  cfg_abort_en,
+  input                  dma_drained
 );
   `include "dv_fcov_macros.svh"
 
@@ -39,7 +42,7 @@ interface dma_cov_if
   // SHA back-pressure corner: a beat has been captured (`rd_done_q`) in the per-beat region but the
   // SHA engine has not yet consumed it, so the read side is stalled awaiting `sha2_consumed_q`.
   logic sha_wait;
-  assign sha_wait = (ctrl_state_q inside {DmaReadPrime, DmaOverlap}) &&
+  assign sha_wait = (ctrl_state_q inside {DmaSendWrite, DmaShaWait}) &&
                     use_inline_hashing && rd_done_q && !sha2_consumed_q;
 
   // A CONTROL field combination is being rejected as DmaOpcodeErr this cycle.
@@ -109,10 +112,16 @@ interface dma_cov_if
       bins clr_intr    = {DmaClearIntrSrc};
       bins wait_intr   = {DmaWaitIntrSrcResponse};
       bins addr_setup  = {DmaAddrSetup};
-      bins read_prime  = {DmaReadPrime};
-      bins overlap     = {DmaOverlap};
-      bins last_write  = {DmaLastWrite};
+      bins cfg_validate = {DmaCfgValidate};
+      bins send_read    = {DmaSendRead};
+      bins wait_read    = {DmaWaitReadResponse};
+      bins send_write   = {DmaSendWrite};
+      bins wait_write   = {DmaWaitWriteResponse};
+      bins read_burst   = {DmaReadBurst};
+      bins write_burst  = {DmaWriteBurst};
+      bins run_pipe     = {DmaRunPipe};
       bins sha_final   = {DmaShaFinalize};
+      bins sha_wait    = {DmaShaWait};
       bins error       = {DmaError};
       // Inline AES block-serial sub-FSM.
       bins aes_gather   = {DmaAesGather};
@@ -122,19 +131,18 @@ interface dma_cov_if
       bins aes_tag      = {DmaAesTag};
     }
 
-    // FSM edges of the per-beat overlap region.
+    // FSM edges of the serial and burst datapaths.
     cp_fsm_transition: coverpoint ctrl_state_q iff (rst_n) {
-      // Chunk setup primes the first read.
-      bins setup_to_prime    = (DmaAddrSetup  => DmaReadPrime);
-      // Multi-beat chunk enters the overlap region; single-beat chunk skips straight to the write.
-      bins prime_to_overlap  = (DmaReadPrime  => DmaOverlap);
-      bins prime_to_last     = (DmaReadPrime  => DmaLastWrite);
-      // Steady-state overlap, and its exit to the final write.
-      bins overlap_to_overlap = (DmaOverlap   => DmaOverlap);
-      bins overlap_to_last    = (DmaOverlap   => DmaLastWrite);
-      // Transfer / chunk completion out of the final write.
-      bins last_to_final     = (DmaLastWrite  => DmaShaFinalize);
-      bins last_to_idle      = (DmaLastWrite  => DmaIdle);
+      bins setup_to_read     = (DmaAddrSetup => DmaSendRead);
+      bins read_to_write     = (DmaSendRead => DmaSendWrite);
+      bins write_to_read     = (DmaSendWrite => DmaSendRead);
+      bins write_to_final    = (DmaSendWrite => DmaShaFinalize);
+      bins write_to_idle     = (DmaSendWrite => DmaIdle);
+      bins validate_to_rburst = (DmaCfgValidate => DmaReadBurst);
+      bins validate_to_pipe   = (DmaCfgValidate => DmaRunPipe);
+      bins rburst_to_wburst    = (DmaReadBurst => DmaWriteBurst);
+      bins wburst_to_idle      = (DmaWriteBurst => DmaIdle);
+      bins pipe_to_idle        = (DmaRunPipe => DmaIdle);
       bins final_to_idle     = (DmaShaFinalize => DmaIdle);
       // Inline AES block-serial path: setup -> (AAD ->) gather -> process -> scatter -> {next
       // block | tag (GCM) | idle (CTR)}; the tag completes or errors on a mismatch.
@@ -176,24 +184,24 @@ interface dma_cov_if
                            binsof(cp_cross_port) intersect {1'b1};
     }
 
-    // SHA back-pressure corner now lives in DmaReadPrime/DmaOverlap: a captured beat awaiting SHA
+    // SHA back-pressure corner lives in the serial write/wait states: a captured beat awaiting SHA
     // consume stalls the read side.
     cp_sha_backpressure: coverpoint sha_wait iff (rst_n) {
       bins not_waiting = {1'b0};
       bins waiting     = {1'b1};
     }
 
-    // Captured CONTROL fields of an accepted operation. Sampled while in DmaReadPrime so the fields
+    // Captured CONTROL fields of an accepted operation. Sampled while validating so the fields
     // reflect a transfer the DUT has accepted (a launched copy/hash/memset/verify).
-    cp_do_read: coverpoint do_read iff (rst_n && ctrl_state_q == DmaReadPrime) {
+    cp_do_read: coverpoint do_read iff (rst_n && ctrl_state_q == DmaCfgValidate) {
       bins no_read = {1'b0};   // memset
       bins read    = {1'b1};   // copy / hash / verify
     }
-    cp_do_write: coverpoint do_write iff (rst_n && ctrl_state_q == DmaReadPrime) {
+    cp_do_write: coverpoint do_write iff (rst_n && ctrl_state_q == DmaCfgValidate) {
       bins no_write = {1'b0};  // verify
       bins write    = {1'b1};  // copy / hash / memset
     }
-    cp_digest: coverpoint digest_sel iff (rst_n && ctrl_state_q == DmaReadPrime) {
+    cp_digest: coverpoint digest_sel iff (rst_n && ctrl_state_q == DmaCfgValidate) {
       bins none   = {DigestNone};
       bins sha256 = {DigestSha256};
       bins sha384 = {DigestSha384};
@@ -303,5 +311,36 @@ interface dma_cov_if
   endgroup
 
   `DV_FCOV_INSTANTIATE_CG(dma_cfg_cg, en_full_cov)
+
+  // ----------------------------------------------------------------------------------------------
+  // Abort-quiesce coverage. These close the hole that hid the abort-drain bugs: the abort must be
+  // exercised from every state, and (the corner the bugs needed) while reads, writes and
+  // interrupt-clear writes are outstanding on the bus. Sampled while the abort is asserted.
+  // ----------------------------------------------------------------------------------------------
+  covergroup dma_abort_cg @(posedge clk);
+    option.per_instance = 1;
+    option.name = "dma_abort_cg";
+
+    // The state the DMA was in when the abort was asserted (any state must be abortable).
+    cp_abort_state: coverpoint ctrl_state_q iff (rst_n && cfg_abort_en) {
+      bins idle       = {DmaIdle};
+      bins clr_intr   = {DmaClearIntrSrc};
+      bins wait_intr  = {DmaWaitIntrSrcResponse};
+      bins addr_setup = {DmaAddrSetup};
+      bins serial     = {DmaSendRead, DmaWaitReadResponse, DmaSendWrite, DmaWaitWriteResponse};
+      bins burst      = {DmaReadBurst, DmaWriteBurst, DmaRunPipe};
+      bins sha_final  = {DmaShaFinalize};
+      bins error      = {DmaError};
+      bins aes_states = default;  // inline-AES gather/scatter/ghash/tag sub-states
+    }
+
+    // Whether any accepted request still awaits a response when abort is sampled.
+    cp_abort_outstanding: coverpoint dma_drained iff (rst_n && cfg_abort_en) {
+      bins none    = {1'b1};
+      bins pending = {1'b0};
+    }
+  endgroup
+
+  `DV_FCOV_INSTANTIATE_CG(dma_abort_cg, en_full_cov)
 
 endinterface
