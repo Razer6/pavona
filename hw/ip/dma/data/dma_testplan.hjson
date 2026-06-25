@@ -264,6 +264,33 @@
         tests: ["dma_abort"]
       }
       {
+        name: dma_abort_drain
+        desc: '''
+              Directed abort/drain test for the bus-quiescence corner: abort must not leave the bus
+              live or report completion before outstanding responses have drained.
+
+              Stimulus:
+              - Start a multi-beat memory-to-memory copy and assert CONTROL.abort a swept number of
+                cycles in, so the abort lands while reads/writes are still outstanding under the
+                randomized device response latency.
+              - Immediately after requesting the abort, attempt to reprogram the port-selecting CSRs
+                (ADDRESS_SPACE_ID); this must be ignored while the abort drains (CSRs stay locked).
+              - After all aborts, run a clean copy.
+
+              Checking:
+              - No bus request is issued on any port after abort (SVA AbortNoBusReq_A); STATUS.busy
+                stays asserted until every outstanding response has drained (SVA AbortBusyHeld_A /
+                ErrorBusyHeld_A); the DMA only returns to idle once drained (SVA DrainBeforeIdle_A)
+                and the abort always completes (SVA AbortEventuallyCompletes_A).
+              - An aborted transfer never reports STATUS.done; the subsequent clean copy completes and
+                its destination data matches the source (no stale-response corruption).
+              - Coverage: dma_abort_cg samples the state and the set of outstanding responses at the
+                abort, including interrupt-clear outstanding.
+              '''
+        stage: V2
+        tests: ["dma_abort_drain"]
+      }
+      {
         name: dma_stress_all
         desc: '''
               Run the other tests in random order while injecting TL errors and running automated CSR tests in parallel.

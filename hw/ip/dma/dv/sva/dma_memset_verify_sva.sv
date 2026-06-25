@@ -34,11 +34,11 @@ module dma_memset_verify_sva
   // Uses the ungated clock so the property is not vacuously stalled by the operation's clock gate.
   // Disabled around an in-progress error/abort, which legitimately diverts the FSM to DmaError/Idle.
   `ASSERT(MemsetNoDeadlock_A,
-          (ctrl_state_q inside {DmaReadPrime, DmaOverlap, DmaLastWrite}) && !do_read |->
+          (ctrl_state_q inside {DmaSendWrite, DmaWaitWriteResponse}) && !do_read |->
           s_eventually (ctrl_state_q inside {DmaIdle, DmaShaFinalize, DmaError}),
           clk_i, !rst_ni)
   `ASSERT(VerifyNoDeadlock_A,
-          (ctrl_state_q inside {DmaReadPrime, DmaOverlap, DmaLastWrite}) && !do_write |->
+          (ctrl_state_q inside {DmaSendRead, DmaWaitReadResponse, DmaShaWait}) && !do_write |->
           s_eventually (ctrl_state_q inside {DmaIdle, DmaShaFinalize, DmaError}),
           clk_i, !rst_ni)
 

@@ -80,6 +80,11 @@
       reseed: 5
     }
     {
+      name: dma_abort_drain
+      uvm_test_seq: dma_abort_drain_vseq
+      reseed: 5
+    }
+    {
       name: dma_short_transfer
       uvm_test_seq: dma_short_transfer_vseq
       reseed: 25
