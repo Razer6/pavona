@@ -157,6 +157,7 @@ module dma
   localparam int unsigned PORT_OUTST_W = $clog2(NUM_MAX_OUTSTANDING_REQS + 2);
   logic [NumPorts-1:0][PORT_OUTST_W-1:0] port_outst_q, port_outst_d;
   logic dma_drained;
+  logic abort_complete;
 
   // Per-beat metadata FIFO (pushed at read issue, popped at read response to steer + form the
   // data FIFO entry) and the data FIFO (pushed at read response, popped at write issue).
@@ -696,7 +697,7 @@ module dma
   logic [TRANSFER_BYTES_WIDTH-1:0] xfer_width_bytes;
   logic [TRANSFER_BYTES_WIDTH-1:0] src_range_span, dst_range_span;
   // Bytes the current beat actually commits (full width, or the partial final-beat remainder).
-  logic [TRANSFER_BYTES_WIDTH-1:0] beat_bytes;
+  logic [TRANSFER_BYTES_WIDTH-1:0] beat_bytes, committed_remaining;
   logic capture_transfer_byte;
   prim_flop_en #(
       .Width(TRANSFER_BYTES_WIDTH)
@@ -984,19 +985,19 @@ module dma
     port_wdata = '0;
     port_be    = '0;
 
-    if (rd_issue) begin
+    if (!cfg_abort_en && rd_issue) begin
       port_req[src_port_idx]  = 1'b1;
       port_addr[src_port_idx] = rd_issue_addr;
       port_be[src_port_idx]   = rd_issue_be;
     end
-    if (wr_issue) begin
+    if (!cfg_abort_en && wr_issue) begin
       port_req  [dst_port_idx] = 1'b1;
       port_we   [dst_port_idx] = 1'b1;
       port_addr [dst_port_idx] = wr_issue_addr;
       port_wdata[dst_port_idx] = wr_issue_data;
       port_be   [dst_port_idx] = wr_issue_be;
     end
-    if (dma_clear_intr && clr_asid_valid) begin
+    if (!cfg_abort_en && dma_clear_intr && clr_asid_valid) begin
       port_req  [clr_port_idx] = 1'b1;
       port_we   [clr_port_idx] = 1'b1;
       port_addr [clr_port_idx] = DMA_ADDR_WIDTH'(reg2hw.intr_src_addr[clear_index_q].q);
@@ -1103,13 +1104,9 @@ module dma
     // Default assignments for the muxed config signals for the idle state
     cfg_handshake_en = control_q.cfg_handshake_en;
 
-    // Abort has the highest priority in the state machine. In all cases, if the abort is raised,
-    // the DMA is reset to the idle state. This includes the error state and the default state,
-    // which should never be reached during normal operation. The abort condition has precedence
-    // over any outstanding TL-UL transaction.
+    // Abort has the highest priority. Stop issuing immediately, but keep the controller busy and
+    // its port-selecting CSRs locked until all previously accepted transactions have responded.
     if (cfg_abort_en) begin
-      ctrl_state_d        = DmaIdle;
-      clear_go            = 1'b1;
       // Flush the inline AES engine and all its block state on abort, so nothing replays into the
       // next transfer.
       aes_clear           = 1'b1;
@@ -1121,6 +1118,10 @@ module dma
       aes_aad_blk_cnt_en  = 1'b1;
       aes_rd_inflight_d   = 1'b0;
       aes_wr_inflight_d   = 1'b0;
+      if (dma_drained) begin
+        ctrl_state_d = DmaIdle;
+        clear_go     = 1'b1;
+      end
     end else begin
       unique case (ctrl_state_q)
         DmaIdle: begin
@@ -1889,7 +1890,7 @@ module dma
         // Wait here until the error is cleared
         DmaError: begin
           if (control_q.aes_en) aes_clear = 1'b1;
-          if (!reg2hw.status.error.q) begin
+          if (!reg2hw.status.error.q && dma_drained) begin
             ctrl_state_d = DmaIdle;
             clear_go     = 1'b1;
           end
@@ -2071,6 +2072,7 @@ module dma
   // A new transfer may only begin once all TL-UL ports have no responses outstanding, so a
   // prior aborted/errored transfer's late responses cannot bleed into it.
   assign dma_drained = !(|port_outst_q);
+  assign abort_complete = cfg_abort_en && dma_drained;
 
   // Outstanding-counter bounds assertions (must never underflow: a response implies a prior
   // accepted request still outstanding).
@@ -2236,10 +2238,16 @@ module dma
   assign remaining_bytes = (transfer_remaining_bytes < chunk_remaining_bytes) ?
                             transfer_remaining_bytes : chunk_remaining_bytes;
 
-  // Match the byte-enable clamp on the final partial beat so counters and address write-back
-  // reflect the bytes actually transferred rather than rounding up to a full-width word.
-  assign beat_bytes = (remaining_bytes < TRANSFER_BYTES_WIDTH'(transfer_width_q)) ?
-                      remaining_bytes : TRANSFER_BYTES_WIDTH'(transfer_width_q);
+  // Match the byte-enable clamp on the beat being committed. Use only registered counters here:
+  // `setup_*` may already select the next beat in the same cycle, so feeding it back into the
+  // completion counters would form a combinational loop.
+  assign committed_remaining =
+      ((reg2hw.total_data_size.q - transfer_byte_q) <
+       (reg2hw.chunk_data_size.q - chunk_byte_q)) ?
+      (reg2hw.total_data_size.q - transfer_byte_q) :
+      (reg2hw.chunk_data_size.q - chunk_byte_q);
+  assign beat_bytes = (committed_remaining < TRANSFER_BYTES_WIDTH'(transfer_width_q)) ?
+                      committed_remaining : TRANSFER_BYTES_WIDTH'(transfer_width_q);
 
   // Range-check span per endpoint: a fixed (non-incrementing) address only ever accesses the single
   // transfer word [addr, addr+width-1]; an incrementing address spans the chunk
@@ -2296,7 +2304,7 @@ module dma
 
     // Clear the `go` bit if we are in a single transfer and finished the DMA operation,
     // hardware handshake mode when we finished all transfers, or when aborting the transfer.
-    hw2reg.control.go.de = clear_go || cfg_abort_en;
+    hw2reg.control.go.de = clear_go || abort_complete;
     hw2reg.control.go.d = 1'b0;
 
     // Unlock the register set when not busy. IDLE is not the right indicator,
@@ -2358,7 +2366,7 @@ module dma
     // - abort                 (going back to idle)
     hw2reg.status.busy.de = ((ctrl_state_q == DmaIdle) && (ctrl_state_d != DmaIdle)) ||
                             clear_go                                                 ||
-                            cfg_abort_en;
+                            abort_complete;
     // If transitioning from IDLE, set busy, otherwise clear it
     hw2reg.status.busy.d = ((ctrl_state_q == DmaIdle) && (ctrl_state_d != DmaIdle)) ? 1'b1 : 1'b0;
 
@@ -2381,7 +2389,7 @@ module dma
     hw2reg.status.error.de = (ctrl_state_d == DmaError) | clear_status;
     hw2reg.status.error.d = clear_status ? 1'b0 : 1'b1;
 
-    hw2reg.status.aborted.de = cfg_abort_en | clear_status;
+    hw2reg.status.aborted.de = abort_complete | clear_status;
     hw2reg.status.aborted.d = clear_status ? 1'b0 : 1'b1;
 
     hw2reg.status.sha2_digest_valid.de = sha2_digest_set | clear_sha_status;
@@ -2582,6 +2590,17 @@ module dma
   // A request must only target a port whose ASID resolved to a valid index.
   `ASSERT(ReadReqValidIdx_A, rd_issue |-> src_asid_valid, gated_clk, !rst_ni)
   `ASSERT(WriteReqValidIdx_A, wr_issue |-> dst_asid_valid, gated_clk, !rst_ni)
+
+  // Abort/error quiescence: no request may launch after abort, and software must not observe the
+  // DMA as idle until every response to a previously accepted request has drained.
+  `ASSERT(AbortNoBusReq_A, cfg_abort_en |-> (port_req == '0), gated_clk, !rst_ni)
+  `ASSERT(AbortBusyHeld_A, (cfg_abort_en && !dma_drained) |-> reg2hw.status.busy.q,
+          gated_clk, !rst_ni)
+  `ASSERT(ErrorBusyHeld_A, ((ctrl_state_q == DmaError) && !dma_drained) |->
+          reg2hw.status.busy.q, gated_clk, !rst_ni)
+  `ASSERT(DrainBeforeIdle_A,
+          ((ctrl_state_q != DmaIdle) && (ctrl_state_d == DmaIdle)) |-> !(|port_outst_d),
+          gated_clk, !rst_ni)
 
   // Alert assertions for reg_we onehot check
   `ASSERT_PRIM_REG_WE_ONEHOT_ERROR_TRIGGER_ALERT(RegWeOnehotCheck_A, u_dma_reg, alert_tx_o[0])

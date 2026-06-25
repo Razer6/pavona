@@ -62,6 +62,7 @@ filesets:
       - seq_lib/dma_aes_error_vseq.sv: {is_include_file: true}
       - seq_lib/dma_aes_abort_vseq.sv: {is_include_file: true}
       - seq_lib/dma_aes_clear_mid_commit_vseq.sv: {is_include_file: true}
+      - seq_lib/dma_abort_drain_vseq.sv: {is_include_file: true}
       - seq_lib/dma_aes_bus_err_vseq.sv: {is_include_file: true}
       - seq_lib/dma_generic_stress_vseq.sv: {is_include_file: true}
       - seq_lib/dma_memory_stress_vseq.sv: {is_include_file: true}

@@ -6,7 +6,7 @@
 //
 // Performs SHA transfers whose final beat is partial (total size not a multiple of 4B) and feeds
 // the SHA engine as fast as possible (zero access/response delays) to provoke SHA back-pressure in
-// the per-beat region (DmaReadPrime/DmaOverlap): a captured beat stalls the read side until the SHA
+// the serial per-beat region: a captured beat stalls the write side until the SHA
 // engine consumes it. The digest check in the scoreboard catches any byte-enable corruption around
 // the partial final beat. See dma_fsm_cg.cp_sha_backpressure for the matching cover point.
 class dma_hashing_partial_vseq extends dma_memory_vseq;
@@ -37,7 +37,7 @@ class dma_hashing_partial_vseq extends dma_memory_vseq;
 
   virtual task body();
     `uvm_info(`gfn, "DMA: Starting hashing partial-beat Sequence", UVM_LOW)
-    // Feed the SHA engine as fast as possible to provoke SHA back-pressure in DmaReadPrime/DmaOverlap.
+    // Feed the SHA engine as fast as possible to provoke SHA back-pressure in the serial path.
     set_access_delays(0, 0);
     set_response_delays(0, 0);
     super.body();

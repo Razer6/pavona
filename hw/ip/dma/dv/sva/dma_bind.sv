@@ -46,8 +46,8 @@ module dma_bind;
     .ctrl_state_q (ctrl_state_q),
     .do_read      (do_read),
     .do_write     (do_write),
-    .read_issue   (read_issue),
-    .write_issue  (write_issue)
+    .read_issue   (rd_issue),
+    .write_issue  (wr_issue)
   );
 
 endmodule

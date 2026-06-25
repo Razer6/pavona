@@ -7,7 +7,7 @@
 // Forces source and destination onto different host ports (OtInternalAddr vs SocControlAddr map to
 // distinct DmaPortDesc entries), so src_port_idx != dst_port_idx and the read of beat i+1 overlaps
 // the write of beat i. Plain memory-to-memory copy, 4B transfers, zero delays so the overlap region
-// (DmaOverlap) is exercised back-to-back. Data/address correctness is checked by the scoreboard.
+// (DmaRunPipe) is exercised back-to-back. Data/address correctness is checked by the scoreboard.
 class dma_overlap_vseq extends dma_memory_vseq;
   `uvm_object_utils(dma_overlap_vseq)
   `uvm_object_new
