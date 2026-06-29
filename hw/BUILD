@@ -37,7 +37,7 @@ string_list_flag(
     name = "verilator_options",
     build_setting_default = [
         "--threads",
-        "4",
+        "1",
     ],
 )
 

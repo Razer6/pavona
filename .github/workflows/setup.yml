@@ -65,6 +65,7 @@ jobs:
             --test_timeout=2400,2400,4000,-1 \
             --test_output=errors \
             --//hw:make_options=-j,"$(nproc)" \
+            --//hw:verilator_options=--threads,$(nproc) \
             //sw/device/tests:uart_smoketest_sim_verilator
       - name: Run ACC ISS test
         run: make -C hw/ip/acc/dv/accsim test
@@ -194,5 +195,6 @@ jobs:
               --test_timeout=2400,2400,4000,-1 \
               --test_output=errors \
               --//hw:make_options=-j,\$(nproc) \
+              --//hw:verilator_options=--threads,$(nproc) \
               //sw/device/tests:uart_smoketest_sim_verilator \
             && make -C hw/ip/acc/dv/accsim test"
