@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-class aes_clear_test extends aes_base_test;
+class aes_ghash_fi_test extends aes_base_test;
 
-  `uvm_component_utils(aes_clear_test)
+  `uvm_component_utils(aes_ghash_fi_test)
   `uvm_component_new
 
 
@@ -15,23 +15,24 @@ class aes_clear_test extends aes_base_test;
 
   function void configure_env();
     super.configure_env();
-
-    cfg.error_types              = 0;
-    cfg.num_messages_min         = 1;
+    cfg.en_scb                   = 0;
+    cfg.error_types              = 4'b1110; // inject errors in regs and fsm errors
+    cfg.num_messages_min         = 3;
     cfg.num_messages_max         = 6;
+    cfg.unbalanced               = 0;
     // message related knobs
-    cfg.ecb_weight               = 10;
-    cfg.cbc_weight               = 10;
-    cfg.ctr_weight               = 10;
-    cfg.ofb_weight               = 10;
-    cfg.cfb_weight               = 10;
-    cfg.gcm_weight               = `EN_GCM ? 10 : 0;
+    cfg.ecb_weight               = 0;
+    cfg.cbc_weight               = 0;
+    cfg.ofb_weight               = 0;
+    cfg.cfb_weight               = 0;
+    cfg.ctr_weight               = 0;
+    cfg.gcm_weight               = 100;
 
-    cfg.message_len_min          = 17;
-    cfg.message_len_max          = 128;
+    cfg.message_len_min          = 1;    // one block (16bytes=128bits)
+    cfg.message_len_max          = 65;
     cfg.aad_len_min              = 0;
-    cfg.aad_len_max              = 64;
-    cfg.manual_operation_pct     = 30;
+    cfg.aad_len_max              = 65;
+    cfg.manual_operation_pct     = 0;
     cfg.use_key_mask             = 0;
 
     cfg.fixed_data_en            = 0;
@@ -46,8 +47,9 @@ class aes_clear_test extends aes_base_test;
     cfg.fixed_iv_en              = 0;
 
     cfg.random_data_key_iv_order = 1;
-    cfg.clear_reg_pct            = 80;
+    cfg.read_prob                = 70;
+    cfg.write_prob               = 90;
 
     `DV_CHECK_RANDOMIZE_FATAL(cfg)
   endfunction
-endclass : aes_clear_test
+endclass : aes_ghash_fi_test

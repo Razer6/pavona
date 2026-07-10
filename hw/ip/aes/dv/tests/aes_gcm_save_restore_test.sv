@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-class aes_smoke_test extends aes_base_test;
+class aes_gcm_save_restore_test extends aes_base_test;
 
-  `uvm_component_utils(aes_smoke_test)
+  `uvm_component_utils(aes_gcm_save_restore_test)
   `uvm_component_new
 
 
@@ -15,21 +15,24 @@ class aes_smoke_test extends aes_base_test;
 
   function void configure_env();
     super.configure_env();
-    cfg.error_types              = 0;     // no errors in smoke test
+    // disable scoreboard for this directed test as the queues inside the SCB
+    // are not able to correctly handle saving and restoring items.
+    cfg.en_scb                   = 0;
+    cfg.error_types              = 0;     // no errors
     cfg.num_messages_min         = 1;
-    cfg.num_messages_max         = 6;
+    cfg.num_messages_max         = 1;
     // message related knobs
-    cfg.ecb_weight               = 10;
-    cfg.cbc_weight               = 10;
-    cfg.ctr_weight               = 10;
-    cfg.ofb_weight               = 10;
-    cfg.cfb_weight               = 10;
-    cfg.gcm_weight               = `EN_GCM ? 10 : 0;
+    cfg.ecb_weight               = 0;
+    cfg.cbc_weight               = 0;
+    cfg.ctr_weight               = 0;
+    cfg.ofb_weight               = 0;
+    cfg.cfb_weight               = 0;
+    cfg.gcm_weight               = 100;
 
-    cfg.message_len_min          = 16;    // one block (16bytes=128bits)
-    cfg.message_len_max          = 32;    //
-    cfg.aad_len_min              = 0;     //
-    cfg.aad_len_max              = 32;    //
+    cfg.message_len_min          = 16;   // one block (16bytes=128bits)
+    cfg.message_len_max          = 123;  //
+    cfg.aad_len_min              = 16;   //
+    cfg.aad_len_max              = 123;  //
     cfg.manual_operation_pct     = 50;
     cfg.use_key_mask             = 0;
 
@@ -37,7 +40,7 @@ class aes_smoke_test extends aes_base_test;
     cfg.fixed_key_en             = 0;
 
     cfg.fixed_operation_en       = 0;
-    cfg.fixed_operation          = aes_pkg::AES_ENC;
+    cfg.fixed_operation          = aes_pkg::AES_DEC;
 
     cfg.fixed_keylen_en          = 0;
     cfg.fixed_keylen             = 3'b001;
@@ -51,4 +54,4 @@ class aes_smoke_test extends aes_base_test;
 
     `DV_CHECK_RANDOMIZE_FATAL(cfg)
   endfunction
-endclass : aes_smoke_test
+endclass : aes_gcm_save_restore_test
