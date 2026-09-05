@@ -12,10 +12,14 @@ class dma_base_vseq extends cip_base_vseq #(
 
   `uvm_object_utils(dma_base_vseq)
 
-  // response sequences
-  dma_pull_seq #(.AddrWidth(HOST_ADDR_WIDTH)) seq_host;
-  dma_pull_seq #(.AddrWidth(CTN_ADDR_WIDTH))  seq_ctn;
-  dma_pull_seq #(.AddrWidth(SYS_ADDR_WIDTH))  seq_sys;
+  // Device responder sequences keyed by GLOBAL port index `p`, one per present host port: 32-bit
+  // ports use `dma_pull_seq` on a `tl_sequencer`, 64-bit ports use `dma_tl_device_seq` on a
+  // `dma_tl_sequencer`. A uniform 64-bit address width lets both share handle types. Keyed by `p`
+  // (not ASID) so two ports may share an ASID without overwriting each other's responder handle.
+  localparam int unsigned DevAddrWidth = dma_pkg::DMA_ADDR_WIDTH;
+
+  dma_pull_seq #(.AddrWidth(DevAddrWidth)) seq32[int];
+  dma_tl_device_seq                        seq64[int];
 
   // DMA configuration item
   dma_seq_item dma_config;
@@ -31,86 +35,79 @@ class dma_base_vseq extends cip_base_vseq #(
   function new (string name = "");
     super.new(name);
     dma_config = dma_seq_item::type_id::create("dma_config");
-    // response sequences
-    seq_ctn  = dma_pull_seq #(.AddrWidth(CTN_ADDR_WIDTH))::type_id::create("seq_ctn");
-    seq_host = dma_pull_seq #(.AddrWidth(HOST_ADDR_WIDTH))::type_id::create("seq_host");
-    seq_sys  = dma_pull_seq #(.AddrWidth(SYS_ADDR_WIDTH))::type_id::create("seq_sys");
-    // Create memory models
-    seq_host.dst_fifo = dma_handshake_mode_fifo#(
-                                .AddrWidth(HOST_ADDR_WIDTH))::type_id::create("fifo_host");
-    seq_ctn.dst_fifo = dma_handshake_mode_fifo#(
-                                .AddrWidth(CTN_ADDR_WIDTH))::type_id::create("fifo_ctn");
-    seq_sys.dst_fifo = dma_handshake_mode_fifo#(
-                                .AddrWidth(SYS_ADDR_WIDTH))::type_id::create("fifo_sys");
-    seq_host.src_fifo = dma_handshake_mode_fifo#(
-                                .AddrWidth(HOST_ADDR_WIDTH))::type_id::create("fifo_host");
-    seq_ctn.src_fifo = dma_handshake_mode_fifo#(
-                                .AddrWidth(CTN_ADDR_WIDTH))::type_id::create("fifo_ctn");
-    seq_sys.src_fifo = dma_handshake_mode_fifo#(
-                                .AddrWidth(SYS_ADDR_WIDTH))::type_id::create("fifo_sys");
-    seq_host.mem = mem_model#(.AddrWidth(HOST_ADDR_WIDTH),
-                                .DataWidth(HOST_DATA_WIDTH))::type_id::create("mem_host");
-    seq_ctn.mem = mem_model#(.AddrWidth(CTN_ADDR_WIDTH),
-                                .DataWidth(CTN_DATA_WIDTH))::type_id::create("mem_ctn");
-    seq_sys.mem = mem_model#(.AddrWidth(SYS_ADDR_WIDTH),
-                                .DataWidth(SYS_DATA_WIDTH))::type_id::create("mem_sys");
+
+    // Build one responder sequence per present host port, with its own source/destination FIFO and
+    // memory model, keyed by global port index `p` and derived from the descriptor.
+    foreach (dma_pkg::DmaPortDesc[p]) begin
+      string sfx = $sformatf("p%0d", p);
+      if (dma_pkg::DmaPortDesc[p].cls == dma_pkg::PortTlul32) begin
+        dma_pull_seq #(.AddrWidth(DevAddrWidth)) s;
+        s = dma_pull_seq #(.AddrWidth(DevAddrWidth))::type_id::create({"seq_", sfx});
+        s.dst_fifo = dma_handshake_mode_fifo#(
+                       .AddrWidth(DevAddrWidth))::type_id::create({"fifo_dst_", sfx});
+        s.src_fifo = dma_handshake_mode_fifo#(
+                       .AddrWidth(DevAddrWidth))::type_id::create({"fifo_src_", sfx});
+        s.mem = mem_model#(.AddrWidth(DevAddrWidth),
+                           .DataWidth(HOST_DATA_WIDTH))::type_id::create({"mem_", sfx});
+        seq32[p] = s;
+      end else begin
+        dma_tl_device_seq s;
+        s = dma_tl_device_seq::type_id::create({"seq_", sfx});
+        s.dst_fifo = dma_handshake_mode_fifo#(
+                       .AddrWidth(DevAddrWidth))::type_id::create({"fifo_dst_", sfx});
+        s.src_fifo = dma_handshake_mode_fifo#(
+                       .AddrWidth(DevAddrWidth))::type_id::create({"fifo_src_", sfx});
+        s.mem = mem_model#(.AddrWidth(DevAddrWidth),
+                           .DataWidth(HOST_DATA_WIDTH))::type_id::create({"mem_", sfx});
+        seq64[p] = s;
+      end
+    end
 
     // Mutual exclusion of CONTROL register accesses.
     sem_control = new(1);
   endfunction : new
 
+  // The responder maps are keyed by global port index `p`, but the public test-facing API selects
+  // a responder by logical ASID (the DMA's src/dst address space). These helpers translate an ASID
+  // to the present port index of the matching class. They return the FIRST matching port; with the
+  // default descriptor (unique ASIDs) this is exact. -1 means "no such port".
+  function int port32_for_asid(asid_encoding_e asid);
+    foreach (seq32[p]) if (dma_pkg::DmaPortDesc[p].asid == asid) return p;
+    return -1;
+  endfunction
+  function int port64_for_asid(asid_encoding_e asid);
+    foreach (seq64[p]) if (dma_pkg::DmaPortDesc[p].asid == asid) return p;
+    return -1;
+  endfunction
+
+  // Convenience: does the given ASID have a present 32-bit / 64-bit port?
+  function bit has_seq32(asid_encoding_e asid); return port32_for_asid(asid) >= 0; endfunction
+  function bit has_seq64(asid_encoding_e asid); return port64_for_asid(asid) >= 0; endfunction
+
   function void init_model();
-    // Assign mem_model instance handle to config object
-    cfg.mem_ctn = seq_ctn.mem;
-    cfg.mem_host = seq_host.mem;
-    cfg.mem_sys = seq_sys.mem;
-    // Assign dma_handshake_mode_fifo instance handle to config object
-    cfg.fifo_dst_ctn = seq_ctn.dst_fifo;
-    cfg.fifo_dst_host = seq_host.dst_fifo;
-    cfg.fifo_dst_sys = seq_sys.dst_fifo;
-    cfg.fifo_src_ctn = seq_ctn.src_fifo;
-    cfg.fifo_src_host = seq_host.src_fifo;
-    cfg.fifo_src_sys = seq_sys.src_fifo;
-    // Initialize memory
-    cfg.mem_host.init();
-    cfg.mem_ctn.init();
-    cfg.mem_sys.init();
-    // Initialize destination FIFOs
-    cfg.fifo_dst_host.init();
-    cfg.fifo_dst_ctn.init();
-    cfg.fifo_dst_sys.init();
-    // Initialize source FIFOs
-    cfg.fifo_src_host.init();
-    cfg.fifo_src_ctn.init();
-    cfg.fifo_src_sys.init();
+    // Publish each present port's memory/FIFO models into the cfg (keyed by ASID for scoreboard
+    // routing) and initialize them. The responder maps are keyed by port index `p`; derive the ASID
+    // from the descriptor.
+    foreach (seq32[p]) begin
+      asid_encoding_e asid = dma_pkg::DmaPortDesc[p].asid;
+      cfg.mems[asid]     = seq32[p].mem;
+      cfg.fifo_dst[asid] = seq32[p].dst_fifo;
+      cfg.fifo_src[asid] = seq32[p].src_fifo;
+    end
+    foreach (seq64[p]) begin
+      asid_encoding_e asid = dma_pkg::DmaPortDesc[p].asid;
+      cfg.mems[asid]     = seq64[p].mem;
+      cfg.fifo_dst[asid] = seq64[p].dst_fifo;
+      cfg.fifo_src[asid] = seq64[p].src_fifo;
+    end
+    // Initialize memory and FIFO models for every present port.
+    foreach (cfg.mems[asid])     cfg.mems[asid].init();
+    foreach (cfg.fifo_dst[asid]) cfg.fifo_dst[asid].init();
+    foreach (cfg.fifo_src[asid]) cfg.fifo_src[asid].init();
   endfunction
 
-  // When testing the SoC System bus, we have only a 32-bit TL-UL agent, so the addresses must be
-  // adjusted using base addresses. These have been randomized within the 64-bit address space of
-  // the SoC System bus.
-  function void set_system_base_addr(ref dma_seq_item dma_config);
-    // Note: we are deliberately setting the Sys-TL adapter base addresses to 'x' if they are not
-    // to be used according to the ASID values.
-    logic [SYS_ADDR_WIDTH-1:0] src_base_addr;
-    logic [SYS_ADDR_WIDTH-1:0] dst_base_addr;
-
-    // Set up the base address for Source/Read traffic.
-    if (dma_config.src_asid == SocSystemAddr) src_base_addr = dma_config.soc_system_src_base_addr;
-    cfg.soc_system_src_base_addr = src_base_addr;
-    // Inform the interface adapter of the chosen base address so that it may perform checking.
-    cfg.dma_sys_tl_vif.set_base_addr(SysCmdRead, src_base_addr);
-    seq_sys.set_base_addr(SysCmdRead, src_base_addr);
-
-    // Set up the base address for Source/Read traffic.
-    if (dma_config.dst_asid == SocSystemAddr) dst_base_addr = dma_config.soc_system_dst_base_addr;
-    cfg.soc_system_dst_base_addr = dst_base_addr;
-    // Inform the interface adapter of the chosen base address so that it may perform checking.
-    cfg.dma_sys_tl_vif.set_base_addr(SysCmdWrite, dst_base_addr);
-    seq_sys.set_base_addr(SysCmdWrite, dst_base_addr);
-
-    `uvm_info(`gfn, $sformatf("Setting Sys-TL adapter src base 0x%0x dst base 0x%0x",
-                              src_base_addr, dst_base_addr), UVM_MEDIUM)
-  endfunction
+  // The SoC System bus is modelled by `dma_tl_device_seq`, which gets the full 64-bit
+  // address from the `dma_tl_agent` monitor: no base-address window programming needed.
 
   // Randomization of DMA configuration and transfer properties; to be overridden in those
   // derived classes where further constraints are required.
@@ -136,10 +133,15 @@ class dma_base_vseq extends cip_base_vseq #(
                                  ref bit [7:0] src_data[],
                                  input bit [31:0] offset, input bit [31:0] size);
     // TODO: we should perhaps not be assuming a 32-bit data bus here.
-    bit [63:0] end_addr = (start_addr + size + 3) & ~3;
+    bit [63:0] end_addr = (start_addr + size + 3) & ~64'd3;
     bit [63:0] addr = {start_addr[63:2], 2'd0};
     `uvm_info(`gfn, $sformatf("Populating ASID 0x%x address range [0x%0x,0x%0x)",
                               asid, addr, end_addr), UVM_MEDIUM)
+
+    if (!cfg.mems.exists(asid)) begin
+      `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+      return;
+    end
 
     // Alas we must ensure that the first bus word is fully-defined because TL-UL host adapter
     // fetches only complete bus words and there are assertion checks on the TL-UL bus.
@@ -151,20 +153,7 @@ class dma_base_vseq extends cip_base_vseq #(
         data = src_data[offset];
         offset++;
       end
-      case (asid)
-        OtInternalAddr: begin
-          cfg.mem_host.write_byte(addr, data);
-        end
-        SocControlAddr: begin
-          cfg.mem_ctn.write_byte(addr, data);
-        end
-        SocSystemAddr: begin
-          cfg.mem_sys.write_byte(addr, data);
-        end
-        default: begin
-          `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-        end
-      endcase
+      cfg.mems[asid].write_byte(addr, data);
       addr++;
     end
   endfunction
@@ -172,20 +161,11 @@ class dma_base_vseq extends cip_base_vseq #(
   // Function to populate FIFO with pre-randomized, known source data
   function void populate_src_fifo(asid_encoding_e asid, ref bit [7:0] src_data[],
                                   input bit [31:0] offset, input bit [31:0] size);
-    case (asid)
-      OtInternalAddr: begin
-        cfg.fifo_src_host.populate_fifo(src_data, offset, size);
-      end
-      SocControlAddr: begin
-        cfg.fifo_src_ctn.populate_fifo(src_data, offset, size);
-      end
-      SocSystemAddr: begin
-        cfg.fifo_src_sys.populate_fifo(src_data, offset, size);
-      end
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-      end
-    endcase
+    if (!cfg.fifo_src.exists(asid)) begin
+      `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+      return;
+    end
+    cfg.fifo_src[asid].populate_fifo(src_data, offset, size);
   endfunction
 
   function void supply_data(ref dma_seq_item dma_config, bit [31:0] offset, bit [31:0] size);
@@ -216,29 +196,14 @@ class dma_base_vseq extends cip_base_vseq #(
                                         bit [31:0] chunk_size, bit wrap, bit [31:0] offset,
                                         bit [31:0] max_size);
     start_addr[1:0] = 2'd0; // Address generated by DMA is 4B aligned
-    case (asid)
-      OtInternalAddr: begin
-        cfg.fifo_src_host.enable_fifo(.fifo_base(start_addr),
-                                      .per_transfer_width(per_transfer_width),
-                                      .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
-                                      .max_size(max_size));
-      end
-      SocControlAddr: begin
-        cfg.fifo_src_ctn.enable_fifo(.fifo_base(start_addr),
-                                     .per_transfer_width(per_transfer_width),
-                                     .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
-                                     .max_size(max_size));
-      end
-      SocSystemAddr: begin
-        cfg.fifo_src_sys.enable_fifo(.fifo_base(start_addr),
-                                     .per_transfer_width(per_transfer_width),
-                                     .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
-                                     .max_size(max_size));
-      end
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-      end
-    endcase
+    if (!cfg.fifo_src.exists(asid)) begin
+      `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+      return;
+    end
+    cfg.fifo_src[asid].enable_fifo(.fifo_base(start_addr),
+                                   .per_transfer_width(per_transfer_width),
+                                   .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
+                                   .max_size(max_size));
   endfunction
 
   // Function to set the transfer properties for a destination FIFO.
@@ -247,29 +212,14 @@ class dma_base_vseq extends cip_base_vseq #(
                                         bit [31:0] chunk_size, bit wrap, bit [31:0] offset,
                                         bit [31:0] max_size);
     start_addr[1:0] = 2'd0; // Address generated by DMA is 4B aligned
-    case (asid)
-      OtInternalAddr: begin
-        cfg.fifo_dst_host.enable_fifo(.fifo_base(start_addr),
-                                      .per_transfer_width(per_transfer_width),
-                                      .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
-                                      .max_size(max_size));
-      end
-      SocControlAddr: begin
-        cfg.fifo_dst_ctn.enable_fifo(.fifo_base(start_addr),
-                                     .per_transfer_width(per_transfer_width),
-                                     .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
-                                     .max_size(max_size));
-      end
-      SocSystemAddr: begin
-        cfg.fifo_dst_sys.enable_fifo(.fifo_base(start_addr),
-                                     .per_transfer_width(per_transfer_width),
-                                     .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
-                                     .max_size(max_size));
-      end
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-      end
-    endcase
+    if (!cfg.fifo_dst.exists(asid)) begin
+      `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+      return;
+    end
+    cfg.fifo_dst[asid].enable_fifo(.fifo_base(start_addr),
+                                   .per_transfer_width(per_transfer_width),
+                                   .chunk_size(chunk_size), .wrap(wrap), .offset(offset),
+                                   .max_size(max_size));
   endfunction
 
   // Configure the source and destination models (memory models or FIFOs) appropriately for the
@@ -294,7 +244,7 @@ class dma_base_vseq extends cip_base_vseq #(
                               dma_config.src_chunk_wrap, offset, chunk_size);
     end else begin
       // The source address depends upon the configuration; chunks may overlap each other.
-      bit [31:0] src_addr = dma_config.src_addr;
+      bit [63:0] src_addr = dma_config.src_addr;
       if (!dma_config.src_chunk_wrap) begin
         src_addr += offset;
       end
@@ -436,7 +386,7 @@ class dma_base_vseq extends cip_base_vseq #(
                                  dma_config.mem_range_limit,
                                  dma_config.mem_range_valid,
                                  dma_config.range_regwen);
-    set_system_base_addr(dma_config);
+    // SoC System bus is full 64-bit (`dma_tl_device_seq`): no base-address window setup needed.
   endtask : run_common_config
 
   // Task: Enable/Disable Interrupt(s)
@@ -453,82 +403,102 @@ class dma_base_vseq extends cip_base_vseq #(
     csr_wr(ral.handshake_intr_enable, 32'd1);
   endtask : enable_handshake_interrupt
 
-  // Enable/disable errors on TL-UL buses with the given percentage probability/word
+  // Enable/disable errors on TL-UL buses with the given percentage probability/word, on every
+  // present port.
   function void enable_bus_errors(int pct);
-    seq_ctn.enable_bus_errors(pct);
-    seq_sys.enable_bus_errors(pct);
-    seq_host.enable_bus_errors(pct);
+    foreach (seq32[p]) seq32[p].enable_bus_errors(pct);
+    foreach (seq64[p]) seq64[p].enable_bus_errors(pct);
   endfunction
 
-  // Set the minimum and maximum grant delays on the TL-UL buses
+  // Set the minimum and maximum grant delays on the TL-UL buses (every present port).
   // Note: the TL-UL agent shall normally produce randomized grant delays; this function is to be
   //       used only in those sequences where there is a specific reason to control them tightly.
   function void set_access_delays(int min, int max);
-    cfg.tl_agent_dma_host_cfg.a_ready_delay_min = min;
-    cfg.tl_agent_dma_host_cfg.a_ready_delay_max = max;
-
-    cfg.tl_agent_dma_ctn_cfg.a_ready_delay_min = min;
-    cfg.tl_agent_dma_ctn_cfg.a_ready_delay_max = max;
-
-    cfg.tl_agent_dma_sys_cfg.a_ready_delay_min = min;
-    cfg.tl_agent_dma_sys_cfg.a_ready_delay_max = max;
+    foreach (cfg.m_tl32_cfg[p]) begin
+      cfg.m_tl32_cfg[p].a_ready_delay_min = min;
+      cfg.m_tl32_cfg[p].a_ready_delay_max = max;
+    end
+    foreach (cfg.m_tl64_cfg[p]) begin
+      cfg.m_tl64_cfg[p].a_ready_delay_min = min;
+      cfg.m_tl64_cfg[p].a_ready_delay_max = max;
+    end
   endfunction
 
-  // Set the minimum and maximum response delays of the TL-UL devices
+  // Set the minimum and maximum response delays of the TL-UL devices (every present port).
   // Note: the TL-UL agent shall normally produce randomized responses delays; this function is to
   //       be used only in those sequences where there is a specific reason to control them tightly.
   function void set_response_delays(int min, int max);
-    cfg.tl_agent_dma_host_cfg.use_seq_item_d_valid_delay = 1'b0;
-    cfg.tl_agent_dma_host_cfg.d_valid_delay_min = min;
-    cfg.tl_agent_dma_host_cfg.d_valid_delay_max = max;
-
-    cfg.tl_agent_dma_ctn_cfg.use_seq_item_d_valid_delay = 1'b0;
-    cfg.tl_agent_dma_ctn_cfg.d_valid_delay_min = min;
-    cfg.tl_agent_dma_ctn_cfg.d_valid_delay_max = max;
-
-    cfg.tl_agent_dma_sys_cfg.use_seq_item_d_valid_delay = 1'b0;
-    cfg.tl_agent_dma_sys_cfg.d_valid_delay_min = min;
-    cfg.tl_agent_dma_sys_cfg.d_valid_delay_max = max;
+    foreach (cfg.m_tl32_cfg[p]) begin
+      cfg.m_tl32_cfg[p].use_seq_item_d_valid_delay = 1'b0;
+      cfg.m_tl32_cfg[p].d_valid_delay_min = min;
+      cfg.m_tl32_cfg[p].d_valid_delay_max = max;
+    end
+    foreach (cfg.m_tl64_cfg[p]) begin
+      cfg.m_tl64_cfg[p].use_seq_item_d_valid_delay = 1'b0;
+      cfg.m_tl64_cfg[p].d_valid_delay_min = min;
+      cfg.m_tl64_cfg[p].d_valid_delay_max = max;
+    end
   endfunction
 
+  // Enable/disable the wide (host64) monitor's command-integrity check on every present 64-bit
+  // port. Command-integrity fault-injection (negative) tests must clear this so the monitor does
+  // not `uvm_error` on the intentionally-corrupted `a_user.cmd_intg`.
+  function void set_check_cmd_intg(bit en);
+    foreach (cfg.m_tl64_cfg[p]) cfg.m_tl64_cfg[p].check_cmd_intg = en;
+  endfunction
+
+  // Enable/disable read-FIFO mode on the responder for the given ASID.
   function void set_seq_fifo_read_mode(asid_encoding_e asid, bit read_fifo_en);
-    case (asid)
-      OtInternalAddr: begin
-        seq_host.read_fifo_en = read_fifo_en;
-        `uvm_info(`gfn, $sformatf("set host read_fifo_en = %0b", read_fifo_en), UVM_HIGH)
-      end
-      SocControlAddr: begin
-        seq_ctn.read_fifo_en = read_fifo_en;
-        `uvm_info(`gfn, $sformatf("set ctn read_fifo_en = %0b", read_fifo_en), UVM_HIGH)
-      end
-      SocSystemAddr: begin
-        seq_sys.read_fifo_en = read_fifo_en;
-        `uvm_info(`gfn, $sformatf("set sys read_fifo_en = %0b", read_fifo_en), UVM_HIGH)
-      end
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-      end
-    endcase
+    int p32 = port32_for_asid(asid);
+    int p64 = port64_for_asid(asid);
+    if (p32 >= 0) begin
+      seq32[p32].read_fifo_en = read_fifo_en;
+      `uvm_info(`gfn, $sformatf("set %s read_fifo_en = %0b", asid.name(), read_fifo_en), UVM_HIGH)
+    end else if (p64 >= 0) begin
+      seq64[p64].read_fifo_en = read_fifo_en;
+      `uvm_info(`gfn, $sformatf("set %s read_fifo_en = %0b", asid.name(), read_fifo_en), UVM_HIGH)
+    end else begin
+      `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+    end
   endfunction
 
+  // Enable/disable write-FIFO mode on the responder for the given ASID.
   function void set_seq_fifo_write_mode(asid_encoding_e asid, bit write_fifo_en);
-    case (asid)
-      OtInternalAddr: begin
-        seq_host.write_fifo_en = write_fifo_en;
-        `uvm_info(`gfn, $sformatf("set host write_fifo_en = %0b", write_fifo_en), UVM_HIGH)
-      end
-      SocControlAddr: begin
-        seq_ctn.write_fifo_en = write_fifo_en;
-        `uvm_info(`gfn, $sformatf("set ctn write_fifo_en = %0b", write_fifo_en), UVM_HIGH)
-      end
-      SocSystemAddr: begin
-        seq_sys.write_fifo_en = write_fifo_en;
-        `uvm_info(`gfn, $sformatf("set sys write_fifo_en = %0b", write_fifo_en), UVM_HIGH)
-      end
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", asid))
-      end
-    endcase
+    int p32 = port32_for_asid(asid);
+    int p64 = port64_for_asid(asid);
+    if (p32 >= 0) begin
+      seq32[p32].write_fifo_en = write_fifo_en;
+      `uvm_info(`gfn, $sformatf("set %s write_fifo_en = %0b", asid.name(), write_fifo_en), UVM_HIGH)
+    end else if (p64 >= 0) begin
+      seq64[p64].write_fifo_en = write_fifo_en;
+      `uvm_info(`gfn, $sformatf("set %s write_fifo_en = %0b", asid.name(), write_fifo_en), UVM_HIGH)
+    end else begin
+      `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+    end
+  endfunction
+
+  // Set the bytes/transaction on every present responder.
+  function void set_all_txn_bytes(uint bytes);
+    foreach (seq32[p]) seq32[p].set_txn_bytes(bytes);
+    foreach (seq64[p]) seq64[p].set_txn_bytes(bytes);
+  endfunction
+
+  // Register a 'Clear Interrupt' FIFO write on the responder for the given ASID.
+  function void add_fifo_reg_for_asid(asid_encoding_e asid, bit [31:0] addr, bit [31:0] data);
+    int p32 = port32_for_asid(asid);
+    int p64 = port64_for_asid(asid);
+    if (p32 >= 0)      seq32[p32].add_fifo_reg(addr, data);
+    else if (p64 >= 0) seq64[p64].add_fifo_reg(addr, data);
+    else `uvm_error(`gfn, $sformatf("Clear-interrupt bus ASID %s not present", asid.name()))
+  endfunction
+
+  // Enable 'Clear Interrupt' FIFO write handling on the responder for the given ASID.
+  function void set_fifo_clear_for_asid(asid_encoding_e asid, bit en);
+    int p32 = port32_for_asid(asid);
+    int p64 = port64_for_asid(asid);
+    if (p32 >= 0)      seq32[p32].set_fifo_clear(en);
+    else if (p64 >= 0) seq64[p64].set_fifo_clear(en);
+    // Silently ignore if the ASID is not present; nothing to clear.
   endfunction
 
   // Task: Start TLUL Sequences
@@ -552,45 +522,48 @@ class dma_base_vseq extends cip_base_vseq #(
       // TODO: there may be some merit at some point to starting handshaking transfers when
       // interrupts cannot occur, but only if we're expecting to abort transfers, for example.
       if (|fifo_interrupt_mask) begin
+        // `clear_intr_bus[i]` routes the 'Clear Interrupt' write: 1 => OT-internal, 0 => SoC Control.
         bit host_en = 1'b0;
-        bit ctn_en = 1'b0;
-        // Get FIFO interrupt register address and value
-        // Find the interrupt index with both handshake interrupt enable and clear_intr_src
+        bit ctn_en  = 1'b0;
         for (int i = 0; i < dma_reg_pkg::NumIntClearSources; i++) begin
           // Instruct memory/FIFO models on the appropriate bus(es) to expect 'Clear Interrupt'
           // writes, so that they may be excluded from normal traffic.
           if (dma_config.clear_intr_src[i]) begin
+            asid_encoding_e bus_asid =
+                dma_config.clear_intr_bus[i] ? OtInternalAddr : SocControlAddr;
             `uvm_info(`gfn, $sformatf("Clear Interrupt writes expected for source %d on bus %d", i,
                                       dma_config.clear_intr_bus[i]), UVM_HIGH)
-            // Set FIFO interrupt clear address and values in corresponding pull sequence instance
-            case (dma_config.clear_intr_bus[i])
-              0: begin
-                seq_ctn.add_fifo_reg(dma_config.intr_src_addr[i], dma_config.intr_src_wr_val[i]);
-                ctn_en = 1'b1;
-              end
-              default: begin
-                seq_host.add_fifo_reg(dma_config.intr_src_addr[i], dma_config.intr_src_wr_val[i]);
-                host_en = 1'b1;
-              end
-            endcase
+            add_fifo_reg_for_asid(bus_asid, dma_config.intr_src_addr[i],
+                                  dma_config.intr_src_wr_val[i]);
+            if (dma_config.clear_intr_bus[i]) host_en = 1'b1;
+            else                              ctn_en  = 1'b1;
           end
         end
-        // Set FIFO interrupt clear in corresponding pull sequence instance(s)
-        if (ctn_en)  seq_ctn.set_fifo_clear(1'b1);
-        if (host_en) seq_host.set_fifo_clear(1'b1);
+        if (ctn_en)  set_fifo_clear_for_asid(SocControlAddr, 1'b1);
+        if (host_en) set_fifo_clear_for_asid(OtInternalAddr, 1'b1);
       end
     end
 
     // Each of the sequences must be told the bytes/transaction in order to count the bytes read
-    seq_host.set_txn_bytes(dma_config.txn_bytes());
-    seq_ctn.set_txn_bytes(dma_config.txn_bytes());
-    seq_sys.set_txn_bytes(dma_config.txn_bytes());
+    set_all_txn_bytes(dma_config.txn_bytes());
 
     `uvm_info(`gfn, "DMA: Starting Devices", UVM_HIGH)
+    // Start a responder per present port on its per-port (port-index-keyed) sequencer.
     fork
-      seq_ctn.start(p_sequencer.tl_sequencer_dma_ctn_h);
-      seq_host.start(p_sequencer.tl_sequencer_dma_host_h);
-      seq_sys.start(p_sequencer.tl_sequencer_dma_sys_h);
+      begin
+        foreach (seq32[p]) begin
+          automatic int pp = p;
+          fork
+            seq32[pp].start(p_sequencer.tl32_sequencer_h[pp]);
+          join_none
+        end
+        foreach (seq64[p]) begin
+          automatic int pp = p;
+          fork
+            seq64[pp].start(p_sequencer.tl64_sequencer_h[pp]);
+          join_none
+        end
+      end
     join_none
   endtask : start_device
 
@@ -598,50 +571,44 @@ class dma_base_vseq extends cip_base_vseq #(
   virtual task stop_device();
     `uvm_info(`gfn, "DMA: Stopping Devices", UVM_HIGH)
     fork
-      seq_ctn.seq_stop();
-      seq_host.seq_stop();
-      seq_sys.seq_stop();
+      begin
+        foreach (seq32[p]) begin
+          automatic int pp = p;
+          fork seq32[pp].seq_stop(); join_none
+        end
+        foreach (seq64[p]) begin
+          automatic int pp = p;
+          fork seq64[pp].seq_stop(); join_none
+        end
+        wait fork;
+      end
     join
-    // Clear FIFO mode enable bit
-    set_seq_fifo_read_mode(OtInternalAddr, 0);
-    set_seq_fifo_read_mode(SocControlAddr, 0);
-    set_seq_fifo_read_mode(SocSystemAddr, 0);
-    set_seq_fifo_write_mode(OtInternalAddr, 0);
-    set_seq_fifo_write_mode(SocControlAddr, 0);
-    set_seq_fifo_write_mode(SocSystemAddr, 0);
-    // Clear FIFO write clear enable bit
-    seq_ctn.set_fifo_clear(0);
-    seq_host.set_fifo_clear(0);
-    seq_sys.set_fifo_clear(0);
-    // Disable destination FIFOs
-    cfg.fifo_dst_host.disable_fifo();
-    cfg.fifo_dst_ctn.disable_fifo();
-    cfg.fifo_dst_sys.disable_fifo();
-    // Disable source FIFOs
-    cfg.fifo_dst_host.disable_fifo();
-    cfg.fifo_dst_ctn.disable_fifo();
-    cfg.fifo_dst_sys.disable_fifo();
+    // Clear FIFO mode enable bits on every present port.
+    foreach (seq32[p]) begin
+      seq32[p].read_fifo_en  = 0;
+      seq32[p].write_fifo_en = 0;
+      seq32[p].set_fifo_clear(0);
+    end
+    foreach (seq64[p]) begin
+      seq64[p].read_fifo_en  = 0;
+      seq64[p].write_fifo_en = 0;
+      seq64[p].set_fifo_clear(0);
+    end
+    // Disable destination FIFOs.
+    foreach (cfg.fifo_dst[asid]) cfg.fifo_dst[asid].disable_fifo();
   endtask
 
   // Method to clear memory models of any content
   function void clear_memory();
-    // Clear memory contents
     `uvm_info(`gfn, $sformatf("Clearing memory contents"), UVM_MEDIUM)
-    cfg.mem_host.init();
-    cfg.mem_ctn.init();
-    cfg.mem_sys.init();
+    foreach (cfg.mems[asid]) cfg.mems[asid].init();
   endfunction
 
   // Method to clear FIFO models of any content
   function void clear_fifo();
-    // Clear FIFO contents
     `uvm_info(`gfn, $sformatf("Clearing FIFO contents"), UVM_MEDIUM)
-    cfg.fifo_dst_host.init();
-    cfg.fifo_dst_ctn.init();
-    cfg.fifo_dst_sys.init();
-    cfg.fifo_src_host.init();
-    cfg.fifo_src_ctn.init();
-    cfg.fifo_src_sys.init();
+    foreach (cfg.fifo_dst[asid]) cfg.fifo_dst[asid].init();
+    foreach (cfg.fifo_src[asid]) cfg.fifo_src[asid].init();
   endfunction
 
   // Task: Set the CONTROL register, optionally commencing a transfer.
@@ -868,52 +835,26 @@ class dma_base_vseq extends cip_base_vseq #(
     `uvm_info(`gfn, $sformatf("DMA: %s digest: %x", sha_mode, digest), UVM_MEDIUM)
   endtask
 
-  // Return number of bytes read from interface corresponding to source ASID
+  // Return number of bytes read from the responder corresponding to the source ASID.
   virtual function uint get_bytes_read(ref dma_seq_item dma_config);
-    case (dma_config.src_asid)
-      OtInternalAddr: begin
-        `uvm_info(`gfn,
-                  $sformatf("OTInternal bytes_read = %0d", seq_host.bytes_read), UVM_HIGH)
-        return seq_host.bytes_read;
-      end
-      SocControlAddr: begin
-        `uvm_info(`gfn,
-                  $sformatf("SocControlAddr bytes_read = %0d", seq_ctn.bytes_read), UVM_HIGH)
-        return seq_ctn.bytes_read;
-      end
-      SocSystemAddr: begin
-        `uvm_info(`gfn,
-                  $sformatf("SocSystemAddr bytes_read = %0d", seq_sys.bytes_read), UVM_HIGH)
-        return seq_sys.bytes_read;
-      end
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", dma_config.src_asid))
-      end
-    endcase
+    asid_encoding_e asid = dma_config.src_asid;
+    int p32 = port32_for_asid(asid);
+    int p64 = port64_for_asid(asid);
+    if (p32 >= 0)      return seq32[p32].bytes_read;
+    else if (p64 >= 0) return seq64[p64].bytes_read;
+    `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+    return 0;
   endfunction
 
-  // Return number of bytes written to interface corresponding to destination ASID
+  // Return number of bytes written to the responder corresponding to the destination ASID.
   virtual function uint get_bytes_written(ref dma_seq_item dma_config);
-    case (dma_config.dst_asid)
-      OtInternalAddr: begin
-        `uvm_info(`gfn,
-                  $sformatf("OTInternal bytes_written = %0d", seq_host.bytes_written), UVM_HIGH)
-        return seq_host.bytes_written;
-      end
-      SocControlAddr: begin
-        `uvm_info(`gfn,
-                  $sformatf("SocControlAddr bytes_written = %0d", seq_ctn.bytes_written), UVM_HIGH)
-        return seq_ctn.bytes_written;
-      end
-      SocSystemAddr: begin
-        `uvm_info(`gfn,
-                  $sformatf("SocSystemAddr bytes_written = %0d", seq_sys.bytes_written), UVM_HIGH)
-        return seq_sys.bytes_written;
-      end
-      default: begin
-        `uvm_error(`gfn, $sformatf("Unsupported Address space ID %d", dma_config.dst_asid))
-      end
-    endcase
+    asid_encoding_e asid = dma_config.dst_asid;
+    int p32 = port32_for_asid(asid);
+    int p64 = port64_for_asid(asid);
+    if (p32 >= 0)      return seq32[p32].bytes_written;
+    else if (p64 >= 0) return seq64[p64].bytes_written;
+    `uvm_error(`gfn, $sformatf("Unsupported Address space ID %s (port not present)", asid.name()))
+    return 0;
   endfunction
 
   // Body: Need to override for inherited tests

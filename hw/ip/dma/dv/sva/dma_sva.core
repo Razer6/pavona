@@ -9,7 +9,9 @@ filesets:
     depend:
       - lowrisc:tlul:headers
       - lowrisc:fpv:csr_assert_gen
+      - lowrisc:ip:dma_pkg
     files:
+      - dma_tlul_assert_host32_bind.sv
       - dma_bind.sv
     file_type: systemVerilogSource
 

@@ -115,9 +115,13 @@ module top_dragonfly #(
   // parameters for dma
   parameter bit DmaEnableDataIntgGen = 1'b1,
   parameter bit DmaEnableRspDataIntgCheck = 1'b1,
-  parameter logic [tlul_pkg::RsvdWidth-1:0] DmaTlUserRsvd = '0,
-  parameter top_racl_pkg::racl_role_t DmaSysRaclRole = '0,
-  parameter int unsigned DmaOtAgentId = 0,
+  parameter int DmaNumPorts = 3,
+  parameter dma_pkg::dma_port_desc_t DmaPortDesc[DmaNumPorts] =
+      '{dma_pkg::DmaPortOtInternal,
+        dma_pkg::DmaPortSocControl,
+        dma_pkg::DmaPortSocSystem},
+  parameter int unsigned DmaNumTlul32 = 2,
+  parameter int unsigned DmaNumTlul64 = 1,
   // parameters for mbx0
   // parameters for mbx1
   // parameters for mbx2
@@ -211,8 +215,8 @@ module top_dragonfly #(
   output pwrmgr_pkg::pwr_boot_status_t       pwrmgr_boot_status_o,
   input  logic       pwrmgr_ext_rst_ack_i,
   output prim_mubi_pkg::mubi4_t       clk_main_jitter_en_o,
-  output dma_pkg::sys_req_t       dma_sys_req_o,
-  input  dma_pkg::sys_rsp_t       dma_sys_rsp_i,
+  output dma_tlul_pkg::dma_tl_h2d_t [DmaNumTlul64-1:0] dma_host64_h2d_o,
+  input  tlul_pkg::tl_d2h_t [DmaNumTlul64-1:0] dma_host64_d2h_i,
   output logic       es_rng_enable_o,
   input  logic       es_rng_valid_i,
   input  logic [EntropySrcRngBusWidth-1:0] es_rng_bit_i,
@@ -616,8 +620,8 @@ module top_dragonfly #(
   spi_device_pkg::passthrough_rsp_t       spi_device_passthrough_rsp;
   logic       rv_dm_ndmreset_req;
   prim_mubi_pkg::mubi4_t       rstmgr_aon_sw_rst_req;
-  tlul_pkg::tl_h2d_t       soc_proxy_dma_tl_h2d;
-  tlul_pkg::tl_d2h_t       soc_proxy_dma_tl_d2h;
+  tlul_pkg::tl_h2d_t [DmaNumTlul32-1:0] dma_host32_tl_h_req;
+  tlul_pkg::tl_d2h_t [DmaNumTlul32-1:0] dma_host32_tl_h_rsp;
   tlul_pkg::tl_h2d_t       soc_proxy_ctn_tl_h2d;
   tlul_pkg::tl_d2h_t       soc_proxy_ctn_tl_d2h;
   logic [2:0] pwrmgr_aon_wakeups;
@@ -678,8 +682,6 @@ module top_dragonfly #(
   tlul_pkg::tl_d2h_t       sram_ctrl_mbox_ram_tl_rsp;
   tlul_pkg::tl_h2d_t       dma_tl_d_req;
   tlul_pkg::tl_d2h_t       dma_tl_d_rsp;
-  tlul_pkg::tl_h2d_t       main_tl_dma__host_req;
-  tlul_pkg::tl_d2h_t       main_tl_dma__host_rsp;
   tlul_pkg::tl_h2d_t       mbx0_core_tl_d_req;
   tlul_pkg::tl_d2h_t       mbx0_core_tl_d_rsp;
   tlul_pkg::tl_h2d_t       main_tl_mbx0__sram_req;
@@ -1616,8 +1618,8 @@ module top_dragonfly #(
       .alert_rx_i  ( alert_rx[21:21] ),
 
       // Inter-module signals
-      .dma_tl_h2d_i(soc_proxy_dma_tl_h2d),
-      .dma_tl_d2h_o(soc_proxy_dma_tl_d2h),
+      .dma_tl_i(dma_host32_tl_h_req[1]),
+      .dma_tl_o(dma_host32_tl_h_rsp[1]),
       .misc_tl_h2d_i(ctn_misc_tl_h2d_i),
       .misc_tl_d2h_o(ctn_misc_tl_d2h_o),
       .wkup_external_req_o(pwrmgr_aon_wakeups[2]),
@@ -2232,9 +2234,10 @@ module top_dragonfly #(
     .AlertSkewCycles(top_pkg::AlertSkewCycles),
     .EnableDataIntgGen(DmaEnableDataIntgGen),
     .EnableRspDataIntgCheck(DmaEnableRspDataIntgCheck),
-    .TlUserRsvd(DmaTlUserRsvd),
-    .SysRaclRole(DmaSysRaclRole),
-    .OtAgentId(DmaOtAgentId)
+    .NumPorts(DmaNumPorts),
+    .PortDesc(DmaPortDesc),
+    .NumTlul32(DmaNumTlul32),
+    .NumTlul64(DmaNumTlul64)
   ) u_dma (
 
       // Interrupt
@@ -2247,14 +2250,12 @@ module top_dragonfly #(
 
       // Inter-module signals
       .lsio_trigger_i(dma_lsio_trigger),
-      .sys_o(dma_sys_req_o),
-      .sys_i(dma_sys_rsp_i),
-      .ctn_tl_h2d_o(soc_proxy_dma_tl_h2d),
-      .ctn_tl_d2h_i(soc_proxy_dma_tl_d2h),
+      .host64_h2d_o(dma_host64_h2d_o),
+      .host64_d2h_i(dma_host64_d2h_i),
       .racl_policies_i(top_racl_pkg::RACL_POLICY_VEC_DEFAULT),
       .racl_error_o(),
-      .host_tl_h_o(main_tl_dma__host_req),
-      .host_tl_h_i(main_tl_dma__host_rsp),
+      .host32_tl_h_o(dma_host32_tl_h_req),
+      .host32_tl_h_i(dma_host32_tl_h_rsp),
       .tl_d_i(dma_tl_d_req),
       .tl_d_o(dma_tl_d_rsp),
       .scanmode_i,
@@ -2940,9 +2941,9 @@ module top_dragonfly #(
     .tl_rv_dm__sba_i(main_tl_rv_dm__sba_req),
     .tl_rv_dm__sba_o(main_tl_rv_dm__sba_rsp),
 
-    // port: tl_dma__host
-    .tl_dma__host_i(main_tl_dma__host_req),
-    .tl_dma__host_o(main_tl_dma__host_rsp),
+    // port: tl_dma__host32_0
+    .tl_dma__host32_0_i(dma_host32_tl_h_req[0]),
+    .tl_dma__host32_0_o(dma_host32_tl_h_rsp[0]),
 
     // port: tl_mbx0__sram
     .tl_mbx0__sram_i(main_tl_mbx0__sram_req),

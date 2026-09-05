@@ -3705,34 +3705,17 @@
       inter_signal_list:
       [
         {
-          name: dma_tl_h2d
-          desc: TL-UL host port for the DMA to egress into CTN (request part), synchronous
-          struct: tl_h2d
+          name: dma_tl
+          desc: TL-UL host port for the DMA to egress into CTN (point-to-point), synchronous
+          struct: tl
           package: tlul_pkg
-          type: uni
-          act: rcv
+          type: req_rsp
+          act: rsp
           width: 1
           inst_name: soc_proxy
           default: ""
-          end_idx: -1
-          top_type: broadcast
-          top_signame: soc_proxy_dma_tl_h2d
-          index: -1
-        }
-        {
-          name: dma_tl_d2h
-          desc: TL-UL host port for the DMA to egress into CTN (response part), synchronous
-          struct: tl_d2h
-          package: tlul_pkg
-          type: uni
-          act: req
-          width: 1
-          inst_name: soc_proxy
-          default: ""
-          end_idx: -1
-          top_type: broadcast
-          top_signame: soc_proxy_dma_tl_d2h
-          index: -1
+          top_signame: dma_host32_tl_h
+          index: 1
         }
         {
           name: misc_tl_h2d
@@ -7464,11 +7447,22 @@
           domain: "0"
         }
       }
+      param_decl:
+      {
+        NumPorts: 3
+        PortDesc:
+          '''
+          '{dma_pkg::DmaPortOtInternal,
+                  dma_pkg::DmaPortSocControl,
+                  dma_pkg::DmaPortSocSystem}
+          '''
+        NumTlul32: "2"
+        NumTlul64: "1"
+      }
       clock_connections:
       {
         clk_i: clkmgr_aon_clocks.clk_main_infra
       }
-      param_decl: {}
       memory: {}
       param_list:
       [
@@ -7491,31 +7485,50 @@
           name_top: DmaEnableRspDataIntgCheck
         }
         {
-          name: TlUserRsvd
-          desc: Value of `rsvd` field in A channel of all TL-UL host ports
-          type: logic [tlul_pkg::RsvdWidth-1:0]
-          default: "'0"
+          name: NumPorts
+          desc: Total number of host data ports. Override together with DmaPortDesc.
+          type: int
+          default: 3
           local: "false"
           expose: "true"
-          name_top: DmaTlUserRsvd
+          name_top: DmaNumPorts
         }
         {
-          name: SysRaclRole
-          desc: RACL propagated on the Sys interface via `racl_vec`
-          type: top_racl_pkg::racl_role_t
-          default: "'0"
+          name: PortDesc
+          desc:
+            '''
+            Generic host port descriptor array.
+            Top-level connection to the host ports must follow this definition.
+            '''
+          type: dma_pkg::dma_port_desc_t
+          unpacked_dimensions: "[DmaNumPorts]"
+          default:
+            '''
+            '{dma_pkg::DmaPortOtInternal,
+                    dma_pkg::DmaPortSocControl,
+                    dma_pkg::DmaPortSocSystem}
+            '''
           local: "false"
           expose: "true"
-          name_top: DmaSysRaclRole
+          name_top: DmaPortDesc
         }
         {
-          name: OtAgentId
-          desc: Secure Agent ID
+          name: NumTlul32
+          desc: Number of 32-bit TLUL host ports. Per-index routing (xbar vs point-to-point) is resolved at the top level.
           type: int unsigned
-          default: "0"
+          default: "2"
           local: "false"
           expose: "true"
-          name_top: DmaOtAgentId
+          name_top: DmaNumTlul32
+        }
+        {
+          name: NumTlul64
+          desc: Number of 64-bit TLUL host ports (off-bus, point-to-point).
+          type: int unsigned
+          default: "1"
+          local: "false"
+          expose: "true"
+          name_top: DmaNumTlul64
         }
       ]
       inter_signal_list:
@@ -7535,44 +7548,53 @@
           index: -1
         }
         {
-          name: sys
-          desc: SoC System Bus (requests and responses), synchronous
-          struct: sys
-          package: dma_pkg
-          type: req_rsp
+          name: host64_h2d
+          desc: 64-bit TLUL host (h2d) to chip top, point-to-point
+          struct: dma_tl_h2d
+          package: dma_tlul_pkg
+          type: uni
           act: req
-          width: 1
+          width:
+          {
+            name: NumTlul64
+            desc: Number of 64-bit TLUL host ports (off-bus, point-to-point).
+            param_type: int unsigned
+            unpacked_dimensions: null
+            default: 1
+            local: false
+            expose: true
+            name_top: DmaNumTlul64
+          }
           inst_name: dma
           default: ""
           external: true
-          top_signame: dma_sys
+          top_signame: dma_host64_h2d
           conn_type: false
           index: -1
         }
         {
-          name: ctn_tl_h2d
-          desc: TL-UL host port for egress into CTN (request part), synchronous
-          struct: tl_h2d
-          package: tlul_pkg
-          type: uni
-          act: req
-          width: 1
-          inst_name: dma
-          default: ""
-          top_signame: soc_proxy_dma_tl_h2d
-          index: -1
-        }
-        {
-          name: ctn_tl_d2h
-          desc: TL-UL host port for egress into CTN (response part), synchronous
+          name: host64_d2h
+          desc: 64-bit TLUL host (d2h) from chip top, point-to-point
           struct: tl_d2h
           package: tlul_pkg
           type: uni
           act: rcv
-          width: 1
+          width:
+          {
+            name: NumTlul64
+            desc: Number of 64-bit TLUL host ports (off-bus, point-to-point).
+            param_type: int unsigned
+            unpacked_dimensions: null
+            default: 1
+            local: false
+            expose: true
+            name_top: DmaNumTlul64
+          }
           inst_name: dma
           default: ""
-          top_signame: soc_proxy_dma_tl_d2h
+          external: true
+          top_signame: dma_host64_d2h
+          conn_type: false
           index: -1
         }
         {
@@ -7602,15 +7624,27 @@
           index: -1
         }
         {
-          name: host_tl_h
+          name: host32_tl_h
           struct: tl
           package: tlul_pkg
           type: req_rsp
           act: req
-          width: 1
+          width:
+          {
+            name: NumTlul32
+            desc: Number of 32-bit TLUL host ports. Per-index routing (xbar vs point-to-point) is resolved at the top level.
+            param_type: int unsigned
+            unpacked_dimensions: null
+            default: "2"
+            local: false
+            expose: true
+            name_top: DmaNumTlul32
+          }
           inst_name: dma
           default: ""
-          top_signame: main_tl_dma__host
+          end_idx: -1
+          top_type: one-to-N
+          top_signame: dma_host32_tl_h
           index: -1
         }
         {
@@ -11334,13 +11368,10 @@
       [
         pwrmgr_aon.sw_rst_req
       ]
-      soc_proxy.dma_tl_h2d:
+      dma.host32_tl_h:
       [
-        dma.ctn_tl_h2d
-      ]
-      soc_proxy.dma_tl_d2h:
-      [
-        dma.ctn_tl_d2h
+        main.tl_dma__host32_0
+        soc_proxy.dma_tl
       ]
       soc_proxy.ctn_tl_h2d:
       [
@@ -11472,10 +11503,6 @@
       dma.tl_d:
       [
         main.tl_dma
-      ]
-      main.tl_dma__host:
-      [
-        dma.host_tl_h
       ]
       mbx0.core_tl_d:
       [
@@ -11766,7 +11793,8 @@
       pwrmgr_aon.boot_status: pwrmgr_boot_status
       pwrmgr_aon.ext_rst_ack: pwrmgr_ext_rst_ack
       clkmgr_aon.jitter_en: clk_main_jitter_en
-      dma.sys: dma_sys
+      dma.host64_h2d: dma_host64_h2d
+      dma.host64_d2h: dma_host64_d2h
       entropy_src.entropy_src_rng_enable: es_rng_enable
       entropy_src.entropy_src_rng_valid: es_rng_valid
       entropy_src.entropy_src_rng_bits: es_rng_bit
@@ -11961,7 +11989,7 @@
           mbx_pcie0.core
           mbx_pcie1.core
         ]
-        dma.host:
+        dma.host32_0:
         [
           sram_ctrl_main.ram
           sram_ctrl_mbox.ram
@@ -12602,7 +12630,7 @@
           pipeline: true
         }
         {
-          name: dma.host
+          name: dma.host32_0
           type: host
           addr_space: hart
           clock: clk_main_i
@@ -13013,7 +13041,7 @@
           index: -1
         }
         {
-          name: tl_dma__host
+          name: tl_dma__host32_0
           struct: tl
           package: tlul_pkg
           type: req_rsp
@@ -13021,9 +13049,8 @@
           inst_name: main
           width: 1
           default: ""
-          end_idx: -1
-          top_signame: main_tl_dma__host
-          index: -1
+          top_signame: dma_host32_tl_h
+          index: 0
         }
         {
           name: tl_mbx0__sram
@@ -22656,34 +22683,17 @@
         index: -1
       }
       {
-        name: dma_tl_h2d
-        desc: TL-UL host port for the DMA to egress into CTN (request part), synchronous
-        struct: tl_h2d
+        name: dma_tl
+        desc: TL-UL host port for the DMA to egress into CTN (point-to-point), synchronous
+        struct: tl
         package: tlul_pkg
-        type: uni
-        act: rcv
+        type: req_rsp
+        act: rsp
         width: 1
         inst_name: soc_proxy
         default: ""
-        end_idx: -1
-        top_type: broadcast
-        top_signame: soc_proxy_dma_tl_h2d
-        index: -1
-      }
-      {
-        name: dma_tl_d2h
-        desc: TL-UL host port for the DMA to egress into CTN (response part), synchronous
-        struct: tl_d2h
-        package: tlul_pkg
-        type: uni
-        act: req
-        width: 1
-        inst_name: soc_proxy
-        default: ""
-        end_idx: -1
-        top_type: broadcast
-        top_signame: soc_proxy_dma_tl_d2h
-        index: -1
+        top_signame: dma_host32_tl_h
+        index: 1
       }
       {
         name: misc_tl_h2d
@@ -24909,44 +24919,53 @@
         index: -1
       }
       {
-        name: sys
-        desc: SoC System Bus (requests and responses), synchronous
-        struct: sys
-        package: dma_pkg
-        type: req_rsp
+        name: host64_h2d
+        desc: 64-bit TLUL host (h2d) to chip top, point-to-point
+        struct: dma_tl_h2d
+        package: dma_tlul_pkg
+        type: uni
         act: req
-        width: 1
+        width:
+        {
+          name: NumTlul64
+          desc: Number of 64-bit TLUL host ports (off-bus, point-to-point).
+          param_type: int unsigned
+          unpacked_dimensions: null
+          default: 1
+          local: false
+          expose: true
+          name_top: DmaNumTlul64
+        }
         inst_name: dma
         default: ""
         external: true
-        top_signame: dma_sys
+        top_signame: dma_host64_h2d
         conn_type: false
         index: -1
       }
       {
-        name: ctn_tl_h2d
-        desc: TL-UL host port for egress into CTN (request part), synchronous
-        struct: tl_h2d
-        package: tlul_pkg
-        type: uni
-        act: req
-        width: 1
-        inst_name: dma
-        default: ""
-        top_signame: soc_proxy_dma_tl_h2d
-        index: -1
-      }
-      {
-        name: ctn_tl_d2h
-        desc: TL-UL host port for egress into CTN (response part), synchronous
+        name: host64_d2h
+        desc: 64-bit TLUL host (d2h) from chip top, point-to-point
         struct: tl_d2h
         package: tlul_pkg
         type: uni
         act: rcv
-        width: 1
+        width:
+        {
+          name: NumTlul64
+          desc: Number of 64-bit TLUL host ports (off-bus, point-to-point).
+          param_type: int unsigned
+          unpacked_dimensions: null
+          default: 1
+          local: false
+          expose: true
+          name_top: DmaNumTlul64
+        }
         inst_name: dma
         default: ""
-        top_signame: soc_proxy_dma_tl_d2h
+        external: true
+        top_signame: dma_host64_d2h
+        conn_type: false
         index: -1
       }
       {
@@ -24976,15 +24995,27 @@
         index: -1
       }
       {
-        name: host_tl_h
+        name: host32_tl_h
         struct: tl
         package: tlul_pkg
         type: req_rsp
         act: req
-        width: 1
+        width:
+        {
+          name: NumTlul32
+          desc: Number of 32-bit TLUL host ports. Per-index routing (xbar vs point-to-point) is resolved at the top level.
+          param_type: int unsigned
+          unpacked_dimensions: null
+          default: "2"
+          local: false
+          expose: true
+          name_top: DmaNumTlul32
+        }
         inst_name: dma
         default: ""
-        top_signame: main_tl_dma__host
+        end_idx: -1
+        top_type: one-to-N
+        top_signame: dma_host32_tl_h
         index: -1
       }
       {
@@ -26975,7 +27006,7 @@
         index: -1
       }
       {
-        name: tl_dma__host
+        name: tl_dma__host32_0
         struct: tl
         package: tlul_pkg
         type: req_rsp
@@ -26983,9 +27014,8 @@
         inst_name: main
         width: 1
         default: ""
-        end_idx: -1
-        top_signame: main_tl_dma__host
-        index: -1
+        top_signame: dma_host32_tl_h
+        index: 0
       }
       {
         name: tl_mbx0__sram
@@ -28452,28 +28482,48 @@
         netname: clk_main_jitter_en
       }
       {
-        package: dma_pkg
-        struct: sys_req
-        signame: dma_sys_req_o
-        width: 1
-        type: req_rsp
+        package: dma_tlul_pkg
+        struct: dma_tl_h2d
+        signame: dma_host64_h2d_o
+        width:
+        {
+          name: NumTlul64
+          desc: Number of 64-bit TLUL host ports (off-bus, point-to-point).
+          param_type: int unsigned
+          unpacked_dimensions: null
+          default: 1
+          local: false
+          expose: true
+          name_top: DmaNumTlul64
+        }
+        type: uni
         default: ""
         direction: out
         conn_type: false
         index: -1
-        netname: dma_sys_req
+        netname: dma_host64_h2d
       }
       {
-        package: dma_pkg
-        struct: sys_rsp
-        signame: dma_sys_rsp_i
-        width: 1
-        type: req_rsp
+        package: tlul_pkg
+        struct: tl_d2h
+        signame: dma_host64_d2h_i
+        width:
+        {
+          name: NumTlul64
+          desc: Number of 64-bit TLUL host ports (off-bus, point-to-point).
+          param_type: int unsigned
+          unpacked_dimensions: null
+          default: 1
+          local: false
+          expose: true
+          name_top: DmaNumTlul64
+        }
+        type: uni
         default: ""
         direction: in
         conn_type: false
         index: -1
-        netname: dma_sys_rsp
+        netname: dma_host64_d2h
       }
       {
         package: ""
@@ -30359,23 +30409,43 @@
       {
         package: tlul_pkg
         struct: tl_h2d
-        signame: soc_proxy_dma_tl_h2d
-        width: 1
-        type: uni
+        signame: dma_host32_tl_h_req
+        width:
+        {
+          name: NumTlul32
+          desc: Number of 32-bit TLUL host ports. Per-index routing (xbar vs point-to-point) is resolved at the top level.
+          param_type: int unsigned
+          unpacked_dimensions: null
+          default: "2"
+          local: false
+          expose: true
+          name_top: DmaNumTlul32
+        }
+        type: req_rsp
         end_idx: -1
-        act: rcv
-        suffix: ""
-        default: tlul_pkg::TL_H2D_DEFAULT
+        act: req
+        suffix: req
+        default: ""
       }
       {
         package: tlul_pkg
         struct: tl_d2h
-        signame: soc_proxy_dma_tl_d2h
-        width: 1
-        type: uni
+        signame: dma_host32_tl_h_rsp
+        width:
+        {
+          name: NumTlul32
+          desc: Number of 32-bit TLUL host ports. Per-index routing (xbar vs point-to-point) is resolved at the top level.
+          param_type: int unsigned
+          unpacked_dimensions: null
+          default: "2"
+          local: false
+          expose: true
+          name_top: DmaNumTlul32
+        }
+        type: req_rsp
         end_idx: -1
         act: req
-        suffix: ""
+        suffix: rsp
         default: tlul_pkg::TL_D2H_DEFAULT
       }
       {
@@ -31031,28 +31101,6 @@
         package: tlul_pkg
         struct: tl_d2h
         signame: dma_tl_d_rsp
-        width: 1
-        type: req_rsp
-        end_idx: -1
-        act: rsp
-        suffix: rsp
-        default: ""
-      }
-      {
-        package: tlul_pkg
-        struct: tl_h2d
-        signame: main_tl_dma__host_req
-        width: 1
-        type: req_rsp
-        end_idx: -1
-        act: rsp
-        suffix: req
-        default: tlul_pkg::TL_H2D_DEFAULT
-      }
-      {
-        package: tlul_pkg
-        struct: tl_d2h
-        signame: main_tl_dma__host_rsp
         width: 1
         type: req_rsp
         end_idx: -1

@@ -7,6 +7,7 @@ package dma_env_pkg;
   import uvm_pkg::*;
   import top_pkg::*;
   import dv_utils_pkg::*;
+  import dv_base_agent_pkg::*;
   import dv_lib_pkg::*;
   import mem_model_pkg::*;
   import tl_agent_pkg::*;
@@ -16,6 +17,7 @@ package dma_env_pkg;
   import dma_ral_pkg::*;
   import prim_mubi_pkg::*;
   import dma_pkg::*;
+  import dma_tlul_pkg::*;
   import tlul_pkg::*;
 
   // macro includes
@@ -30,7 +32,9 @@ package dma_env_pkg;
   parameter uint CTN_DATA_WIDTH = 32;
   parameter uint HOST_ADDR_WIDTH = 32;
   parameter uint HOST_DATA_WIDTH = 32;
-  parameter uint SYS_ADDR_WIDTH = 64;
+  // The SoC System bus carries a 64-bit address (`dma_pkg::DMA_ADDR_WIDTH`) but a
+  // standard 32-bit TL data path; its memory/FIFO models use a 64-bit address with
+  // the standard `HOST_DATA_WIDTH` (32-bit) data width.
 
   // Index of interrupt in intf_vif and bits within `intr_` registers.
   typedef enum {
@@ -53,7 +57,6 @@ package dma_env_pkg;
 
   // types
   typedef virtual dma_if dma_vif;
-  typedef virtual dma_sys_tl_if dma_sys_tl_vif;
   typedef class dma_scoreboard;
 
   typedef struct {
@@ -64,6 +67,15 @@ package dma_env_pkg;
   // package sources
   `include "dma_seq_item.sv"
   `include "dma_handshake_mode_fifo.sv"
+  // Wide (64-bit) TileLink transactor for the host64 SoC System port (must precede
+  // the env cfg / scoreboard / env / vseqs that reference these types).
+  `include "dma_tl_seq_item.sv"
+  `include "dma_tl_agent_cfg.sv"
+  `include "dma_tl_monitor.sv"
+  `include "dma_tl_device_driver.sv"
+  `include "dma_tl_sequencer.sv"
+  `include "dma_tl_agent.sv"
+  `include "dma_tl_device_seq.sv"
   `include "dma_env_cfg.sv"
   `include "dma_env_cov.sv"
   `include "dma_virtual_sequencer.sv"
