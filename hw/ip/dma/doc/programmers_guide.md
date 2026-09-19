@@ -80,13 +80,30 @@ If interrupt acknowledgement is required, software must enable it in the [`CLEAR
 The address space for this write operation is configured using the [`CLEAR_INTR_BUS`](registers.md#clear_intr_bus) register.
 The specific address and data value to be written for acknowledgement are defined by the [`INTR_SRC_ADDR_0-10`](registers.md#intr_src_addr) and [`INTR_SRC_WR_VAL_0-10`](registers.md#intr_src_wr_val) registers, respectively.
 
+## Selecting the Operation
+
+The type of operation performed by the DMA is selected by three orthogonal fields in the [`CONTROL`](registers.md#control) register:
+
+  * `read_en`: when set, the DMA reads from the source memory. When cleared, no source read is performed and the write data is instead taken from the pattern programmed in the [`SRC_ADDR_LO`](registers.md#src_addr_lo) register.
+  * `write_en`: when set, the DMA writes to the destination memory. When cleared, no write is performed.
+  * `digest`: selects the inline SHA-2 digest computed over the moved data (`NONE`, `SHA256`, `SHA384`, or `SHA512`).
+
+Combining these fields yields the following operations:
+
+  * **Copy:** Set `read_en = 1`, `write_en = 1`, and `digest = NONE`. The DMA reads data from the source and writes it to the destination.
+  * **Copy + Hash:** Set `read_en = 1`, `write_en = 1`, and `digest` to the desired SHA-2 algorithm. The DMA reads data from the source, writes it to the destination, and concurrently computes the hash digest of the transferred data (see [Inline Hashing](#inline-hashing)).
+  * **Memset:** Set `read_en = 0`, `write_en = 1`, and `digest = NONE`. No source read is performed; instead the DMA fills the destination with the pattern programmed in [`SRC_ADDR_LO`](registers.md#src_addr_lo). For sub-word transfer widths (1 or 2 bytes) the pattern is replicated across the bus word in little-endian order, keyed on the destination address.
+  * **Verify:** Set `read_en = 1`, `write_en = 0`, and `digest` to the desired SHA-2 algorithm. The DMA reads a memory region and computes its digest without writing to any destination, which is useful for integrity or attestation checks. Software reads the result from the [`SHA2_DIGEST_0-15`](registers.md#sha2_digest) registers.
+
+The DMA rejects illegal field combinations (for example a no-op with no read and no write, hashing without a read, reading and discarding data without computing a digest, or a hardware handshake with neither read nor write enabled). Such a configuration is reported via the error bit in the [`ERROR_CODE`](registers.md#error_code) register.
+
 ## Inline Hashing
 
 The DMA incorporates an inline hashing capability for SHA-2 algorithms (SHA-256, SHA-384, and SHA-512).
 This allows the DMA to compute the hash digest of the transferred data concurrently with performing the memory transfer.
 
-To enable inline hashing, software must set the desired SHA-2 algorithm as the opcode in the `opcode` field of the [`CONTROL`](registers.md#control) register.
-This will instruct the DMA to perform the data copy operation along with the hash computation.
+To enable inline hashing, software must select the desired SHA-2 algorithm in the `digest` field of the [`CONTROL`](registers.md#control) register.
+This instructs the DMA to compute the hash digest of the data being moved.
 
 When initiating a transfer with inline hashing, the `initial_transfer` bit in the [`CONTROL`](registers.md#control) register must be asserted.
 This signals the DMA to initialize its internal hash state.
@@ -96,6 +113,39 @@ Once the transfer is complete, the computed hash digest value can be read from t
 
 The endianness of the resulting hash digest can be configured using the `digest_swap` bit in the [`CONTROL`](registers.md#control) register.
 Changing this bit affects the digests of subsequent DMA transfers; it does not alter the current contents of the [`SHA2_DIGEST_0-15`](registers.md#sha2_digest) registers.
+
+## Inline AES Encryption
+
+The DMA can encrypt or decrypt the moved data on-the-fly using AES-CTR or AES-GCM (see [Theory of Operation](theory_of_operation.md#inline-aes-encryption)).
+To program an inline AES transfer:
+
+1. Provide the key: write the two shares to [`KEY_SHARE0`](registers.md#key_share0)/[`KEY_SHARE1`](registers.md#key_share1) (their XOR is the key), or set [`AES_CTRL.sideload`](registers.md#aes_ctrl--sideload) to use the key-manager key.
+2. Set [`AES_CTRL.key_len`](registers.md#aes_ctrl--key_len) and, for GCM with associated data, write the [`AAD`](registers.md#aad) registers and [`AES_CTRL.aad_blocks`](registers.md#aes_ctrl--aad_blocks).
+3. Write the 96-bit nonce to [`IV`](registers.md#iv)`[3:1]` (the counter word `IV[0]` is hardware-managed).
+4. For a GCM decrypt, write the expected authentication tag to [`TAG_IN`](registers.md#tag_in).
+5. Configure the transfer as usual (source/destination addresses, sizes, 4-byte transfer width) and select the operation in [`CONTROL`](registers.md#control): `aes_op` = `Enc`/`Dec` and `aes_mode` = `CTR`/`GCM`, with `digest` = `None`. Assert `initial_transfer`.
+6. Start the transfer with `go`.
+
+The transfer must use a 4-byte transfer width, nonzero total/chunk sizes that are multiples of
+16 bytes, and incrementing non-wrapping addresses. Hardware handshake is not supported.
+The sizes may differ: a shorter final chunk transfers only the remaining bytes, and a chunk
+size greater than the total completes in one chunk.
+
+At an intermediate chunk boundary, `chunk_done` is asserted and `go` and `busy` are cleared.
+Resume by setting `go` with `initial_transfer = 0`. The key, counter, and GHASH state remain
+live, and `CFG_REGWEN` remains locked, including the AES configuration, addresses, and sizes.
+Hardware advances the addresses by the bytes moved in each chunk. AAD is processed once, and
+the GCM tag is generated or checked only after the entire message. To replace a suspended
+message, first abort it and wait for `aborted` and an unlocked `CFG_REGWEN` before reprogramming.
+Starting a new initial transfer while a message is suspended raises an opcode error and wipes
+the retained AES state. GCM supports at most 8191 text blocks (131056 bytes) per message.
+
+On completion of a GCM encrypt, read the computed tag from [`TAG_OUT`](registers.md#tag_out) once [`STATUS.tag_valid`](registers.md#status--tag_valid) is set.
+For a GCM decrypt, a tag mismatch sets [`STATUS.tag_failed`](registers.md#status--tag_failed) and [`ERROR_CODE.aes_tag_error`](registers.md#error_code--aes_tag_error), raises the `recov_fault` alert, and suppresses `done`.
+Because the plaintext is written before the tag is checked, the DMA does not provide hardware quarantine of the destination.
+Suppressing `done` does not stop the CPU, another bus master, or a peripheral from reading unauthenticated plaintext.
+Software must block every consumer until `tag_valid` is set and must wipe the destination before reuse when `tag_failed` is set.
+Do not use inline GCM decrypt for security-sensitive plaintext if the integration cannot enforce this access discipline.
 
 ## Error Condition
 

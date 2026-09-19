@@ -68,6 +68,43 @@
 | dma.[`INTR_SRC_WR_VAL_8`](#intr_src_wr_val)                     | 0x144    |        4 | Write value for interrupt clearing write.                                                                                                                 |
 | dma.[`INTR_SRC_WR_VAL_9`](#intr_src_wr_val)                     | 0x148    |        4 | Write value for interrupt clearing write.                                                                                                                 |
 | dma.[`INTR_SRC_WR_VAL_10`](#intr_src_wr_val)                    | 0x14c    |        4 | Write value for interrupt clearing write.                                                                                                                 |
+| dma.[`AES_CTRL`](#aes_ctrl)                                     | 0x150    |        4 | Inline AES-CTR/GCM parameter register. The cipher operation/mode live in CONTROL.                                                                         |
+| dma.[`KEY_SHARE0_0`](#key_share0)                               | 0x154    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE0_1`](#key_share0)                               | 0x158    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE0_2`](#key_share0)                               | 0x15c    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE0_3`](#key_share0)                               | 0x160    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE0_4`](#key_share0)                               | 0x164    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE0_5`](#key_share0)                               | 0x168    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE0_6`](#key_share0)                               | 0x16c    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE0_7`](#key_share0)                               | 0x170    |        4 | Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.                                                                            |
+| dma.[`KEY_SHARE1_0`](#key_share1)                               | 0x174    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`KEY_SHARE1_1`](#key_share1)                               | 0x178    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`KEY_SHARE1_2`](#key_share1)                               | 0x17c    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`KEY_SHARE1_3`](#key_share1)                               | 0x180    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`KEY_SHARE1_4`](#key_share1)                               | 0x184    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`KEY_SHARE1_5`](#key_share1)                               | 0x188    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`KEY_SHARE1_6`](#key_share1)                               | 0x18c    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`KEY_SHARE1_7`](#key_share1)                               | 0x190    |        4 | Inline AES initial key, share 1. See KEY_SHARE0.                                                                                                          |
+| dma.[`IV_0`](#iv)                                               | 0x194    |        4 | Inline AES-GCM/CTR initialization vector (nonce + counter), 128-bit.                                                                                      |
+| dma.[`IV_1`](#iv)                                               | 0x198    |        4 | Inline AES-GCM/CTR initialization vector (nonce + counter), 128-bit.                                                                                      |
+| dma.[`IV_2`](#iv)                                               | 0x19c    |        4 | Inline AES-GCM/CTR initialization vector (nonce + counter), 128-bit.                                                                                      |
+| dma.[`IV_3`](#iv)                                               | 0x1a0    |        4 | Inline AES-GCM/CTR initialization vector (nonce + counter), 128-bit.                                                                                      |
+| dma.[`AAD_0`](#aad)                                             | 0x1a4    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`AAD_1`](#aad)                                             | 0x1a8    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`AAD_2`](#aad)                                             | 0x1ac    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`AAD_3`](#aad)                                             | 0x1b0    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`AAD_4`](#aad)                                             | 0x1b4    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`AAD_5`](#aad)                                             | 0x1b8    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`AAD_6`](#aad)                                             | 0x1bc    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`AAD_7`](#aad)                                             | 0x1c0    |        4 | Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects                                                                      |
+| dma.[`TAG_IN_0`](#tag_in)                                       | 0x1c4    |        4 | Inline AES-GCM decrypt: the expected authentication tag, 128-bit. Write-only (the                                                                         |
+| dma.[`TAG_IN_1`](#tag_in)                                       | 0x1c8    |        4 | Inline AES-GCM decrypt: the expected authentication tag, 128-bit. Write-only (the                                                                         |
+| dma.[`TAG_IN_2`](#tag_in)                                       | 0x1cc    |        4 | Inline AES-GCM decrypt: the expected authentication tag, 128-bit. Write-only (the                                                                         |
+| dma.[`TAG_IN_3`](#tag_in)                                       | 0x1d0    |        4 | Inline AES-GCM decrypt: the expected authentication tag, 128-bit. Write-only (the                                                                         |
+| dma.[`TAG_OUT_0`](#tag_out)                                     | 0x1d4    |        4 | Inline AES-GCM encrypt: the computed authentication tag, 128-bit. Hardware-driven and                                                                     |
+| dma.[`TAG_OUT_1`](#tag_out)                                     | 0x1d8    |        4 | Inline AES-GCM encrypt: the computed authentication tag, 128-bit. Hardware-driven and                                                                     |
+| dma.[`TAG_OUT_2`](#tag_out)                                     | 0x1dc    |        4 | Inline AES-GCM encrypt: the computed authentication tag, 128-bit. Hardware-driven and                                                                     |
+| dma.[`TAG_OUT_3`](#tag_out)                                     | 0x1e0    |        4 | Inline AES-GCM encrypt: the computed authentication tag, 128-bit. Hardware-driven and                                                                     |
 
 ## INTR_STATE
 Interrupt State Register
@@ -130,17 +167,18 @@ Interrupt Test Register
 Alert Test Register
 - Offset: `0xc`
 - Reset default: `0x0`
-- Reset mask: `0x1`
+- Reset mask: `0x3`
 
 ### Fields
 
 ```wavejson
-{"reg": [{"name": "fatal_fault", "bits": 1, "attr": ["wo"], "rotate": -90}, {"bits": 31}], "config": {"lanes": 1, "fontsize": 10, "vspace": 130}}
+{"reg": [{"name": "fatal_fault", "bits": 1, "attr": ["wo"], "rotate": -90}, {"name": "recov_fault", "bits": 1, "attr": ["wo"], "rotate": -90}, {"bits": 30}], "config": {"lanes": 1, "fontsize": 10, "vspace": 130}}
 ```
 
 |  Bits  |  Type  |  Reset  | Name        | Description                                      |
 |:------:|:------:|:-------:|:------------|:-------------------------------------------------|
-|  31:1  |        |         |             | Reserved                                         |
+|  31:2  |        |         |             | Reserved                                         |
+|   1    |   wo   |   0x0   | recov_fault | Write 1 to trigger one alert event of this kind. |
 |   0    |   wo   |   0x0   | fatal_fault | Write 1 to trigger one alert event of this kind. |
 
 ## SRC_ADDR_LO
@@ -340,7 +378,9 @@ Default Value = kMultiBitBool4True -> Unlocked at reset.
 
 ## CFG_REGWEN
 Indicates whether the configuration registers are locked because the DMA controller is operating.
-In the idle state, this register is set to kMultiBitBool4True.
+In the idle state, this register is set to kMultiBitBool4True unless an AES message
+is suspended between chunks. AES keeps the configuration locked until completion,
+abort, or error; CONTROL and STATUS remain usable to resume or abort the message.
 When the DMA is performing an operation, i.e. the DMA is busy, this register is set to kMultiBitBool4False.
 During the DMA operation, the CONTROL and STATUS registers remain usable.
 The comportable registers (the interrupt and alert configuration) are NOT locked during the DMA operation and can still be updated.
@@ -448,13 +488,13 @@ Other values are reserved.
 ## CONTROL
 Control register for DMA data movement.
 - Offset: `0x44`
-- Reset default: `0x0`
-- Reset mask: `0x8800013f`
+- Reset default: `0x3`
+- Reset mask: `0x88001d3f`
 
 ### Fields
 
 ```wavejson
-{"reg": [{"name": "opcode", "bits": 4, "attr": ["rw"], "rotate": 0}, {"name": "hardware_handshake_enable", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "digest_swap", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 2}, {"name": "initial_transfer", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 18}, {"name": "abort", "bits": 1, "attr": ["wo"], "rotate": -90}, {"bits": 3}, {"name": "go", "bits": 1, "attr": ["rw"], "rotate": -90}], "config": {"lanes": 1, "fontsize": 10, "vspace": 270}}
+{"reg": [{"name": "read_en", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "write_en", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "digest", "bits": 2, "attr": ["rw"], "rotate": -90}, {"name": "hardware_handshake_enable", "bits": 1, "attr": ["rw"], "rotate": -90}, {"name": "digest_swap", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 2}, {"name": "initial_transfer", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 1}, {"name": "aes_op", "bits": 2, "attr": ["rw"], "rotate": -90}, {"name": "aes_mode", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 14}, {"name": "abort", "bits": 1, "attr": ["wo"], "rotate": -90}, {"bits": 3}, {"name": "go", "bits": 1, "attr": ["rw"], "rotate": -90}], "config": {"lanes": 1, "fontsize": 10, "vspace": 270}}
 ```
 
 |  Bits  |  Type  |  Reset  | Name                                                             |
@@ -462,12 +502,17 @@ Control register for DMA data movement.
 |   31   |   rw   |   0x0   | [go](#control--go)                                               |
 | 30:28  |        |         | Reserved                                                         |
 |   27   |   wo   |   0x0   | [abort](#control--abort)                                         |
-|  26:9  |        |         | Reserved                                                         |
+| 26:13  |        |         | Reserved                                                         |
+|   12   |   rw   |   0x0   | [aes_mode](#control--aes_mode)                                   |
+| 11:10  |   rw   |   0x0   | [aes_op](#control--aes_op)                                       |
+|   9    |        |         | Reserved                                                         |
 |   8    |   rw   |   0x0   | [initial_transfer](#control--initial_transfer)                   |
 |  7:6   |        |         | Reserved                                                         |
 |   5    |   rw   |   0x0   | [digest_swap](#control--digest_swap)                             |
 |   4    |   rw   |   0x0   | [hardware_handshake_enable](#control--hardware_handshake_enable) |
-|  3:0   |   rw   |   0x0   | [opcode](#control--opcode)                                       |
+|  3:2   |   rw   |   0x0   | [digest](#control--digest)                                       |
+|   1    |   rw   |   0x1   | [write_en](#control--write_en)                                   |
+|   0    |   rw   |   0x1   | [read_en](#control--read_en)                                     |
 
 ### CONTROL . go
 Setting this bit triggers the DMA operation.
@@ -479,6 +524,23 @@ Firmware shall clear the Go bit when it intends to stop the hardware handshake o
 Aborts the DMA operation if this bit is set.
 Sets the corresponding bit in the status register once abort operation is complete.
 Any secure-side internal transactions are guaranteed to complete, but there are no guarantees on the SoC interface.
+
+### CONTROL . aes_mode
+Inline AES block-cipher mode; only meaningful when aes_op != OFF.
+0 = AES-CTR, 1 = AES-GCM.
+
+### CONTROL . aes_op
+Inline AES cipher operation. Plain encoding (no fault hardening, consistent with the
+rest of CONTROL; if FI protection is required this register would be shadowed). The
+reserved value raises an opcode error. Mutually exclusive with the digest field.
+
+| Value   | Name   | Description                     |
+|:--------|:-------|:--------------------------------|
+| 0x0     | OFF    | No inline AES cipher operation. |
+| 0x1     | ENC    | AES encrypt (CIPH_FWD).         |
+| 0x2     | DEC    | AES decrypt (CIPH_INV).         |
+
+Other values are reserved.
 
 ### CONTROL . initial_transfer
 Marks the initial transfer to initialize the DMA and SHA engine for one transfer that can span over multiple single DMA transfers.
@@ -501,17 +563,22 @@ Used to clear FIFOs from low speed IO peripherals receiving data, e.g., I3C rece
   Note assumption is the peripheral lowers input once FIFO is cleared.
 No explicit clearing necessary.
 
-### CONTROL . opcode
-Defines the type of DMA operations.
+### CONTROL . digest
+Selects the inline hashing digest computed over the moved data.
 
-| Value   | Name   | Description                                             |
-|:--------|:-------|:--------------------------------------------------------|
-| 0x0     | COPY   | Copy Operation, Simple copy from source to destination. |
-| 0x1     | SHA256 | Perform inline hashing using SHA256.                    |
-| 0x2     | SHA384 | Perform inline hashing using SHA384.                    |
-| 0x3     | SHA512 | Perform inline hashing using SHA512.                    |
+| Value   | Name   | Description                          |
+|:--------|:-------|:-------------------------------------|
+| 0x0     | NONE   | No inline hashing.                   |
+| 0x1     | SHA256 | Perform inline hashing using SHA256. |
+| 0x2     | SHA384 | Perform inline hashing using SHA384. |
+| 0x3     | SHA512 | Perform inline hashing using SHA512. |
 
-Other values are reserved.
+
+### CONTROL . write_en
+1 = write to destination; 0 = verify (digest-only, no write).
+
+### CONTROL . read_en
+1 = read from source memory; 0 = memset (write data taken from SRC_ADDR_LO pattern).
 
 ## SRC_CONFIG
 Defines the addressing behavior of the DMA for the source address.
@@ -555,40 +622,80 @@ Defines the addressing behavior of the DMA for the destination address.
 Status indication for DMA data movement.
 - Offset: `0x50`
 - Reset default: `0x0`
-- Reset mask: `0x3f`
+- Reset mask: `0xff`
 
 ### Fields
 
 ```wavejson
-{"reg": [{"name": "busy", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "done", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"name": "aborted", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"name": "error", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"name": "sha2_digest_valid", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "chunk_done", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"bits": 26}], "config": {"lanes": 1, "fontsize": 10, "vspace": 190}}
+{"reg": [{"name": "busy", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "done", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"name": "aborted", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"name": "error", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"name": "sha2_digest_valid", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "chunk_done", "bits": 1, "attr": ["rw1c"], "rotate": -90}, {"name": "tag_valid", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "tag_failed", "bits": 1, "attr": ["ro"], "rotate": -90}, {"bits": 24}], "config": {"lanes": 1, "fontsize": 10, "vspace": 190}}
 ```
 
-|  Bits  |  Type  |  Reset  | Name              | Description                                                                                                                                                                        |
-|:------:|:------:|:-------:|:------------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|  31:6  |        |         |                   | Reserved                                                                                                                                                                           |
-|   5    |  rw1c  |   0x0   | chunk_done        | Transfer of a single chunk is complete. Only raised for multi-chunk memory-to-memory transfers. Cleared automatically by the hardware when starting the transfer of a new chunk.   |
-|   4    |   ro   |   0x0   | sha2_digest_valid | Indicates whether the SHA2_DIGEST register contains a valid digest. This value is cleared on the initial transfer and set when the digest is written.                              |
-|   3    |  rw1c  |   0x0   | error             | Error occurred during the operation. ERROR_CODE register denotes the source of the error.                                                                                          |
-|   2    |  rw1c  |   0x0   | aborted           | Set once aborted operation drains.                                                                                                                                                 |
-|   1    |  rw1c  |   0x0   | done              | Configured DMA operation is complete. Cleared automatically by the hardware when starting a new transfer.                                                                          |
-|   0    |   ro   |   0x0   | busy              | DMA operation is active if this bit is set. DMA engine clears this bit when operation is complete. This bit may be set as long as hardware handshake mode is active and triggered. |
+|  Bits  |  Type  |  Reset  | Name                                            |
+|:------:|:------:|:-------:|:------------------------------------------------|
+|  31:8  |        |         | Reserved                                        |
+|   7    |   ro   |   0x0   | [tag_failed](#status--tag_failed)               |
+|   6    |   ro   |   0x0   | [tag_valid](#status--tag_valid)                 |
+|   5    |  rw1c  |   0x0   | [chunk_done](#status--chunk_done)               |
+|   4    |   ro   |   0x0   | [sha2_digest_valid](#status--sha2_digest_valid) |
+|   3    |  rw1c  |   0x0   | [error](#status--error)                         |
+|   2    |  rw1c  |   0x0   | [aborted](#status--aborted)                     |
+|   1    |  rw1c  |   0x0   | [done](#status--done)                           |
+|   0    |   ro   |   0x0   | [busy](#status--busy)                           |
+
+### STATUS . tag_failed
+Inline AES-GCM decrypt: the supplied authentication tag did NOT match. When set,
+the DMA done indication is suppressed, but the DMA does not hardware-quarantine
+the destination: plaintext was written before authentication and may already be
+visible to other bus masters. Every consumer must wait for tag_valid; on failure,
+software must wipe the destination before reuse. Cleared on the initial transfer.
+
+### STATUS . tag_valid
+Inline AES-GCM: the computed authentication tag (encrypt) is valid in TAG_OUT, or
+the supplied tag matched (decrypt). Cleared on the initial transfer and set by
+hardware on clean completion.
+
+### STATUS . chunk_done
+Transfer of a single chunk is complete.
+Only raised for multi-chunk memory-to-memory transfers.
+Cleared automatically by the hardware when starting the transfer of a new chunk.
+
+### STATUS . sha2_digest_valid
+Indicates whether the SHA2_DIGEST register contains a valid digest.
+This value is cleared on the initial transfer and set when the digest is written.
+
+### STATUS . error
+Error occurred during the operation.
+ERROR_CODE register denotes the source of the error.
+
+### STATUS . aborted
+Set once aborted operation drains.
+
+### STATUS . done
+Configured DMA operation is complete.
+Cleared automatically by the hardware when starting a new transfer.
+
+### STATUS . busy
+DMA operation is active if this bit is set.
+DMA engine clears this bit when operation is complete.
+This bit may be set as long as hardware handshake mode is active and triggered.
 
 ## ERROR_CODE
 Denotes the source of the operational error.
 The error is cleared by writing the RW1C STATUS.error register.
 - Offset: `0x54`
 - Reset default: `0x0`
-- Reset mask: `0xff`
+- Reset mask: `0x1ff`
 
 ### Fields
 
 ```wavejson
-{"reg": [{"name": "src_addr_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "dst_addr_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "opcode_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "size_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "bus_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "base_limit_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "range_valid_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "asid_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"bits": 24}], "config": {"lanes": 1, "fontsize": 10, "vspace": 190}}
+{"reg": [{"name": "src_addr_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "dst_addr_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "opcode_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "size_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "bus_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "base_limit_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "range_valid_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "asid_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"name": "aes_tag_error", "bits": 1, "attr": ["ro"], "rotate": -90}, {"bits": 23}], "config": {"lanes": 1, "fontsize": 10, "vspace": 190}}
 ```
 
 |  Bits  |  Type  |  Reset  | Name              | Description                                                                                                                           |
 |:------:|:------:|:-------:|:------------------|:--------------------------------------------------------------------------------------------------------------------------------------|
-|  31:8  |        |         |                   | Reserved                                                                                                                              |
+|  31:9  |        |         |                   | Reserved                                                                                                                              |
+|   8    |   ro   |   0x0   | aes_tag_error     | Inline AES-GCM decrypt authentication tag mismatch.                                                                                   |
 |   7    |   ro   |   0x0   | asid_error        | The source or destination ASID contains an invalid value.                                                                             |
 |   6    |   ro   |   0x0   | range_valid_error | The DMA enabled memory range is not configured.                                                                                       |
 |   5    |   ro   |   0x0   | base_limit_error  | The base and limit addresses contain an invalid value.                                                                                |
@@ -763,6 +870,233 @@ Write value for interrupt clearing write.
 |  Bits  |  Type  |  Reset  | Name   | Description                               |
 |:------:|:------:|:-------:|:-------|:------------------------------------------|
 |  31:0  |   rw   |   0x0   | wr_val | Write value for interrupt clearing write. |
+
+## AES_CTRL
+Inline AES-CTR/GCM parameter register. The cipher operation/mode live in CONTROL.
+- Offset: `0x150`
+- Reset default: `0x24`
+- Reset mask: `0xfef`
+- Register enable: [`CFG_REGWEN`](#cfg_regwen)
+
+### Fields
+
+```wavejson
+{"reg": [{"name": "key_len", "bits": 3, "attr": ["rw"], "rotate": -90}, {"name": "sideload", "bits": 1, "attr": ["rw"], "rotate": -90}, {"bits": 1}, {"name": "prng_reseed_rate", "bits": 3, "attr": ["rw"], "rotate": -90}, {"name": "aad_blocks", "bits": 4, "attr": ["rw"], "rotate": -90}, {"bits": 20}], "config": {"lanes": 1, "fontsize": 10, "vspace": 180}}
+```
+
+|  Bits  |  Type  |  Reset  | Name                                            |
+|:------:|:------:|:-------:|:------------------------------------------------|
+| 31:12  |        |         | Reserved                                        |
+|  11:8  |   rw   |   0x0   | [aad_blocks](#aes_ctrl--aad_blocks)             |
+|  7:5   |   rw   |   0x1   | [prng_reseed_rate](#aes_ctrl--prng_reseed_rate) |
+|   4    |        |         | Reserved                                        |
+|   3    |   rw   |   0x0   | [sideload](#aes_ctrl--sideload)                 |
+|  2:0   |   rw   |   0x4   | [key_len](#aes_ctrl--key_len)                   |
+
+### AES_CTRL . aad_blocks
+Number of 16-byte AAD blocks (from the AAD registers) for AES-GCM.
+
+### AES_CTRL . prng_reseed_rate
+Masking-PRNG reseed rate, one-hot (aes_pkg).
+
+| Value   | Name   | Description               |
+|:--------|:-------|:--------------------------|
+| 0x1     | PER_1  | Reseed after every block. |
+| 0x2     | PER_64 | Reseed after 64 blocks.   |
+| 0x4     | PER_8K | Reseed after 8k blocks.   |
+
+Other values are reserved.
+
+### AES_CTRL . sideload
+Key source select (plain encoding, consistent with the rest of the config; shadow
+the register if FI protection is required).
+0 = use KEY_SHARE0/1; 1 = use the keymgr sideload key.
+
+### AES_CTRL . key_len
+AES key length, one-hot (aes_pkg::key_len_e). AES-128/192/256 supported.
+
+| Value   | Name    | Description                |
+|:--------|:--------|:---------------------------|
+| 0x1     | AES_128 | 128-bit key.               |
+| 0x2     | AES_192 | 192-bit key.               |
+| 0x4     | AES_256 | 256-bit key (reset value). |
+
+Other values are reserved.
+
+## KEY_SHARE0
+Inline AES initial key, share 0. The effective key is KEY_SHARE0 ^ KEY_SHARE1.
+Write-only (never software-readable); ignored when AES_CTRL.sideload selects the
+keymgr key. Wiped by hardware after use.
+- Reset default: `0x0`
+- Reset mask: `0xffffffff`
+- Register enable: [`CFG_REGWEN`](#cfg_regwen)
+
+### Instances
+
+| Name         | Offset   |
+|:-------------|:---------|
+| KEY_SHARE0_0 | 0x154    |
+| KEY_SHARE0_1 | 0x158    |
+| KEY_SHARE0_2 | 0x15c    |
+| KEY_SHARE0_3 | 0x160    |
+| KEY_SHARE0_4 | 0x164    |
+| KEY_SHARE0_5 | 0x168    |
+| KEY_SHARE0_6 | 0x16c    |
+| KEY_SHARE0_7 | 0x170    |
+
+
+### Fields
+
+```wavejson
+{"reg": [{"name": "key", "bits": 32, "attr": ["wo"], "rotate": 0}], "config": {"lanes": 1, "fontsize": 10, "vspace": 80}}
+```
+
+|  Bits  |  Type  |  Reset  | Name   | Description       |
+|:------:|:------:|:-------:|:-------|:------------------|
+|  31:0  |   wo   |   0x0   | key    | Key share 0 word. |
+
+## KEY_SHARE1
+Inline AES initial key, share 1. See KEY_SHARE0.
+- Reset default: `0x0`
+- Reset mask: `0xffffffff`
+- Register enable: [`CFG_REGWEN`](#cfg_regwen)
+
+### Instances
+
+| Name         | Offset   |
+|:-------------|:---------|
+| KEY_SHARE1_0 | 0x174    |
+| KEY_SHARE1_1 | 0x178    |
+| KEY_SHARE1_2 | 0x17c    |
+| KEY_SHARE1_3 | 0x180    |
+| KEY_SHARE1_4 | 0x184    |
+| KEY_SHARE1_5 | 0x188    |
+| KEY_SHARE1_6 | 0x18c    |
+| KEY_SHARE1_7 | 0x190    |
+
+
+### Fields
+
+```wavejson
+{"reg": [{"name": "key", "bits": 32, "attr": ["wo"], "rotate": 0}], "config": {"lanes": 1, "fontsize": 10, "vspace": 80}}
+```
+
+|  Bits  |  Type  |  Reset  | Name   | Description       |
+|:------:|:------:|:-------:|:-------|:------------------|
+|  31:0  |   wo   |   0x0   | key    | Key share 1 word. |
+
+## IV
+Inline AES-GCM/CTR initialization vector (nonce + counter), 128-bit.
+IV[3:1] is the 96-bit nonce; IV[0] (the counter word) is hardware-forced to the GCM
+J0 low value on a fresh operation. Wiped by hardware after use.
+- Reset default: `0x0`
+- Reset mask: `0xffffffff`
+- Register enable: [`CFG_REGWEN`](#cfg_regwen)
+
+### Instances
+
+| Name   | Offset   |
+|:-------|:---------|
+| IV_0   | 0x194    |
+| IV_1   | 0x198    |
+| IV_2   | 0x19c    |
+| IV_3   | 0x1a0    |
+
+
+### Fields
+
+```wavejson
+{"reg": [{"name": "iv", "bits": 32, "attr": ["rw"], "rotate": 0}], "config": {"lanes": 1, "fontsize": 10, "vspace": 80}}
+```
+
+|  Bits  |  Type  |  Reset  | Name   | Description   |
+|:------:|:------:|:-------:|:-------|:--------------|
+|  31:0  |   rw   |   0x0   | iv     | IV word.      |
+
+## AAD
+Inline AES-GCM additional authenticated data (from CSR). AES_CTRL.aad_blocks selects
+how many 16-byte blocks are valid. Write-only; wiped by hardware after use.
+- Reset default: `0x0`
+- Reset mask: `0xffffffff`
+- Register enable: [`CFG_REGWEN`](#cfg_regwen)
+
+### Instances
+
+| Name   | Offset   |
+|:-------|:---------|
+| AAD_0  | 0x1a4    |
+| AAD_1  | 0x1a8    |
+| AAD_2  | 0x1ac    |
+| AAD_3  | 0x1b0    |
+| AAD_4  | 0x1b4    |
+| AAD_5  | 0x1b8    |
+| AAD_6  | 0x1bc    |
+| AAD_7  | 0x1c0    |
+
+
+### Fields
+
+```wavejson
+{"reg": [{"name": "aad", "bits": 32, "attr": ["wo"], "rotate": 0}], "config": {"lanes": 1, "fontsize": 10, "vspace": 80}}
+```
+
+|  Bits  |  Type  |  Reset  | Name   | Description   |
+|:------:|:------:|:-------:|:-------|:--------------|
+|  31:0  |   wo   |   0x0   | aad    | AAD word.     |
+
+## TAG_IN
+Inline AES-GCM decrypt: the expected authentication tag, 128-bit. Write-only (the
+recomputed tag is never exposed); captured at start. Hardware compares internally and
+reports the result in STATUS.tag_failed. Wiped by hardware after use.
+- Reset default: `0x0`
+- Reset mask: `0xffffffff`
+- Register enable: [`CFG_REGWEN`](#cfg_regwen)
+
+### Instances
+
+| Name     | Offset   |
+|:---------|:---------|
+| TAG_IN_0 | 0x1c4    |
+| TAG_IN_1 | 0x1c8    |
+| TAG_IN_2 | 0x1cc    |
+| TAG_IN_3 | 0x1d0    |
+
+
+### Fields
+
+```wavejson
+{"reg": [{"name": "tag", "bits": 32, "attr": ["wo"], "rotate": 0}], "config": {"lanes": 1, "fontsize": 10, "vspace": 80}}
+```
+
+|  Bits  |  Type  |  Reset  | Name   | Description        |
+|:------:|:------:|:-------:|:-------|:-------------------|
+|  31:0  |   wo   |   0x0   | tag    | Expected tag word. |
+
+## TAG_OUT
+Inline AES-GCM encrypt: the computed authentication tag, 128-bit. Hardware-driven and
+read-only; valid when STATUS.tag_valid is set. Wiped by hardware after use.
+- Reset default: `0x0`
+- Reset mask: `0xffffffff`
+
+### Instances
+
+| Name      | Offset   |
+|:----------|:---------|
+| TAG_OUT_0 | 0x1d4    |
+| TAG_OUT_1 | 0x1d8    |
+| TAG_OUT_2 | 0x1dc    |
+| TAG_OUT_3 | 0x1e0    |
+
+
+### Fields
+
+```wavejson
+{"reg": [{"name": "tag", "bits": 32, "attr": ["ro"], "rotate": 0}], "config": {"lanes": 1, "fontsize": 10, "vspace": 80}}
+```
+
+|  Bits  |  Type  |  Reset  | Name   | Description        |
+|:------:|:------:|:-------:|:-------|:-------------------|
+|  31:0  |   ro   |   0x0   | tag    | Computed tag word. |
 
 
 <!-- END CMDGEN -->

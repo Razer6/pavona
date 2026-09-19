@@ -108,6 +108,20 @@ covergroup dma_config_cg with function sample(dma_seq_item dma_config,
   cp_initial_transfer: coverpoint initial_transfer;
 
   cp_opcode: coverpoint dma_config.opcode;
+  cp_aes_chunk_relation: coverpoint
+      (dma_config.chunk_data_size < dma_config.total_data_size ? 0 :
+       dma_config.chunk_data_size == dma_config.total_data_size ? 1 : 2)
+      iff (dma_config.is_aes) {
+    bins multiple_chunks = {0};
+    bins equal_sizes = {1};
+    bins oversized_chunk = {2};
+  }
+  cp_aes_short_final_chunk: coverpoint
+      (dma_config.chunk_data_size != 0 &&
+       (dma_config.total_data_size % dma_config.chunk_data_size) != 0)
+      iff (dma_config.is_aes);
+  cp_aes_gcm: coverpoint dma_config.aes_gcm iff (dma_config.is_aes);
+  cr_aes_chunk_mode: cross cp_aes_chunk_relation, cp_aes_short_final_chunk, cp_aes_gcm;
 
   cr_src_addr_X_src_asid: cross
       cp_src_addr,
@@ -184,7 +198,9 @@ covergroup dma_status_cg with function sample(
   bit chunk_done,
   bit aborted,
   bit error,
-  bit sha2_digest_valid
+  bit sha2_digest_valid,
+  bit tag_valid,
+  bit tag_failed
 );
   option.per_instance = 1;
   option.name = "dma_status_cg";
@@ -194,10 +210,12 @@ covergroup dma_status_cg with function sample(
   cp_status_aborted: coverpoint aborted;
   cp_status_error: coverpoint error;
   cp_sha2_digest_valid: coverpoint sha2_digest_valid;
+  cp_tag_valid: coverpoint tag_valid;   // inline AES-GCM
+  cp_tag_failed: coverpoint tag_failed; // inline AES-GCM decrypt mismatch
 endgroup
 
 covergroup dma_error_code_cg with function sample(
-  bit[7:0] error_code,
+  bit[DmaErrLast-1:0] error_code,
   asid_encoding_e asid,
   bit src
 );
@@ -213,6 +231,8 @@ covergroup dma_error_code_cg with function sample(
   cp_asid_error: coverpoint error_code[DmaAsidErr];
   cp_baselim_error: coverpoint error_code[DmaBaseLimitErr];
   cp_rangeval_error: coverpoint error_code[DmaRangeValidErr];
+
+  cp_aes_tag_error: coverpoint error_code[DmaAesTagErr];
 
   // For a bus error to be detected, the configuration must have been
   // accepted; i.e. the other errors shall not have been seen.
@@ -296,6 +316,44 @@ covergroup dma_intr_src_cg with function sample(
 
 endgroup
 
+// Inline-AES configuration coverage (sampled per AES transfer by the predicting scoreboard).
+covergroup dma_aes_cg with function sample(
+  bit gcm, bit decrypt, bit [2:0] key_len, bit [3:0] aad_blocks, bit sideload,
+  int n_blocks, bit [2:0] reseed_rate);
+  option.per_instance = 1;
+  option.name = "dma_aes_cg";
+
+  cp_mode: coverpoint gcm { bins ctr = {0}; bins gcm = {1}; }
+  cp_dir:  coverpoint decrypt { bins enc = {0}; bins dec = {1}; }
+  cp_key_len: coverpoint key_len {
+    bins aes128 = {3'b001};
+    bins aes192 = {3'b010};
+    bins aes256 = {3'b100};
+  }
+  cp_aad: coverpoint aad_blocks {
+    bins none = {0};
+    bins one  = {1};
+    bins two  = {2};
+  }
+  cp_sideload: coverpoint sideload;
+  // Transfer size in 16-byte blocks: single block vs small/larger multi-block.
+  cp_n_blocks: coverpoint n_blocks {
+    bins one      = {1};
+    bins two      = {2};
+    bins three_or_more = {[3:$]};
+  }
+  cp_reseed_rate: coverpoint reseed_rate {
+    bins per_1  = {3'b001};
+    bins per_64 = {3'b010};
+    bins per_8k = {3'b100};
+  }
+
+  cr_mode_dir_keylen: cross cp_mode, cp_dir, cp_key_len;
+  cr_mode_aad:        cross cp_mode, cp_aad;
+  cr_keylen_sideload: cross cp_key_len, cp_sideload;
+  cr_mode_dir_nblocks: cross cp_mode, cp_dir, cp_n_blocks;
+endgroup
+
 class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
   `uvm_component_utils(dma_env_cov)
 
@@ -305,6 +363,7 @@ class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
   dma_error_code_cg error_code_cg;
   dma_interrupt_cg interrupt_cg;
   dma_intr_src_cg intr_src_cg;
+  dma_aes_cg aes_cg;
 
   function new(string name, uvm_component parent);
     super.new(name, parent);
@@ -314,6 +373,7 @@ class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
     error_code_cg = new();
     interrupt_cg = new();
     intr_src_cg = new();
+    aes_cg = new();
   endfunction: new
 
 endclass
