@@ -77,7 +77,9 @@ For interrupt handling in hardware handshaking mode, software needs to enable th
 
 The DMA also provides a mechanism to acknowledge the interrupt received from the IO peripheral by performing a configurable write operation.
 If interrupt acknowledgement is required, software must enable it in the [`CLEAR_INTR_SRC`](registers.md#clear_intr_src) register.
-The address space for this write operation is configured using the [`CLEAR_INTR_BUS`](registers.md#clear_intr_bus) register.
+Each interrupt source selects its target port through its `CLEAR_INTR_ASID` register.
+Program the encoded ASID of any configured port before enabling that source's clearing write.
+An invalid or unconfigured target raises `ERROR_CODE.asid_error` without issuing that write.
 The specific address and data value to be written for acknowledgement are defined by the [`INTR_SRC_ADDR_0-10`](registers.md#intr_src_addr) and [`INTR_SRC_WR_VAL_0-10`](registers.md#intr_src_wr_val) registers, respectively.
 
 ## Inline Hashing
@@ -108,3 +110,20 @@ After an error has occurred, firmware must write a 1 to the `error` bit of the [
 ## Device Interface Functions (DIFs)
 
 - [Device Interface Functions](../../../../sw/device/lib/dif/dif_dma.h)
+
+## Address-space identifiers
+
+`ADDR_SPACE_ID.src_asid` occupies bits 7:0 and `dst_asid` occupies bits 15:8.
+ASIDs identify ports independently of their positions in `PortDesc`. The 16 supported
+encodings are `03`, `0c`, `30`, `3f`, `56`, `59`, `65`, `6a`, `95`, `9a`, `a6`, `a9`,
+`c0`, `cf`, `f3`, and `fc` (hexadecimal). Their minimum Hamming distance is four;
+zero and all-ones are invalid. Only IDs assigned in `PortDesc` are accepted.
+Unassigned codewords are reserved for future ports, not aliases of existing ports.
+
+The default integration assigns `03` to internal memory, `0c` to the control network,
+and `30` to the system port. Firmware must use the generated register constants;
+the old 4-bit encodings and interrupt-clear bus bitmap are not compatible.
+`CLEAR_INTR_ASID` provides one 32-bit register per interrupt source, with its ASID
+in bits 7:0. These registers reset to zero, requiring explicit configuration for
+enabled clearing writes. Disabled clearing sources do not require a valid ASID.
+

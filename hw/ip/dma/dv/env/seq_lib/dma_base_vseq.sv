@@ -356,7 +356,8 @@ class dma_base_vseq extends cip_base_vseq #(
   task set_handshake_intr_regs(ref dma_seq_item dma_config);
     `uvm_info(`gfn, "Set DMA Handshake mode interrupt registers", UVM_HIGH)
     csr_wr(ral.clear_intr_src, dma_config.clear_intr_src);
-    csr_wr(ral.clear_intr_bus, dma_config.clear_intr_bus);
+    foreach (dma_config.clear_intr_asid[i])
+      csr_wr(ral.clear_intr_asid[i], dma_config.clear_intr_asid[i]);
     foreach (dma_config.intr_src_addr[i]) begin
       csr_wr(ral.intr_src_addr[i], dma_config.intr_src_addr[i]);
       csr_wr(ral.intr_src_wr_val[i], dma_config.intr_src_wr_val[i]);
@@ -522,25 +523,19 @@ class dma_base_vseq extends cip_base_vseq #(
       // TODO: there may be some merit at some point to starting handshaking transfers when
       // interrupts cannot occur, but only if we're expecting to abort transfers, for example.
       if (|fifo_interrupt_mask) begin
-        // `clear_intr_bus[i]` routes the 'Clear Interrupt' write: 1 => OT-internal, 0 => SoC Control.
-        bit host_en = 1'b0;
-        bit ctn_en  = 1'b0;
         for (int i = 0; i < dma_reg_pkg::NumIntClearSources; i++) begin
           // Instruct memory/FIFO models on the appropriate bus(es) to expect 'Clear Interrupt'
           // writes, so that they may be excluded from normal traffic.
           if (dma_config.clear_intr_src[i]) begin
             asid_encoding_e bus_asid =
-                dma_config.clear_intr_bus[i] ? OtInternalAddr : SocControlAddr;
+                dma_config.clear_intr_asid[i];
             `uvm_info(`gfn, $sformatf("Clear Interrupt writes expected for source %d on bus %d", i,
-                                      dma_config.clear_intr_bus[i]), UVM_HIGH)
+                                      dma_config.clear_intr_asid[i]), UVM_HIGH)
             add_fifo_reg_for_asid(bus_asid, dma_config.intr_src_addr[i],
                                   dma_config.intr_src_wr_val[i]);
-            if (dma_config.clear_intr_bus[i]) host_en = 1'b1;
-            else                              ctn_en  = 1'b1;
+            set_fifo_clear_for_asid(bus_asid, 1'b1);
           end
         end
-        if (ctn_en)  set_fifo_clear_for_asid(SocControlAddr, 1'b1);
-        if (host_en) set_fifo_clear_for_asid(OtInternalAddr, 1'b1);
       end
     end
 

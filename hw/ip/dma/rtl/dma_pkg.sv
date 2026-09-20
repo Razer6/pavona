@@ -27,14 +27,28 @@ package dma_pkg;
     DmaXfer4BperTxn = 2'h2
   } dma_transfer_width_e;
 
-  // ASID uses a 4-bit FI protected encoding with a minimum Hamming distance of 2-bit
-  parameter int unsigned ASID_WIDTH = 4;
+  // Translated extended Hamming [8,4,4] code: 16 IDs, minimum distance four.
+  // Zero and all-ones are invalid. An ID is usable only when present in PortDesc;
+  // unused codewords are reserved for future ports. IDs never depend on port order.
+  parameter int unsigned ASID_WIDTH = 8;
+  parameter int unsigned MaxPorts = 16;
 
   typedef enum logic [ASID_WIDTH-1:0] {
-    OtInternalAddr = 4'h7,
-    SocControlAddr = 4'ha,
-    SocSystemAddr  = 4'h9
+    Asid0 = 8'h03, Asid1 = 8'h0c, Asid2 = 8'h30, Asid3 = 8'h3f,
+    Asid4 = 8'h56, Asid5 = 8'h59, Asid6 = 8'h65, Asid7 = 8'h6a,
+    Asid8 = 8'h95, Asid9 = 8'h9a, Asid10 = 8'ha6, Asid11 = 8'ha9,
+    Asid12 = 8'hc0, Asid13 = 8'hcf, Asid14 = 8'hf3, Asid15 = 8'hfc
   } asid_encoding_e;
+
+  // Names for the default integration, not special cases in the routing logic.
+  parameter asid_encoding_e OtInternalAddr = Asid0;
+  parameter asid_encoding_e SocControlAddr = Asid1;
+  parameter asid_encoding_e SocSystemAddr = Asid2;
+
+  function automatic bit dma_asid_code_valid(logic [ASID_WIDTH-1:0] asid);
+    return asid inside {Asid0, Asid1, Asid2, Asid3, Asid4, Asid5, Asid6, Asid7,
+                        Asid8, Asid9, Asid10, Asid11, Asid12, Asid13, Asid14, Asid15};
+  endfunction
 
   ////////////////////////////////
   // Generic host port descriptor //
@@ -65,6 +79,17 @@ package dma_pkg;
     DmaPortSocControl,
     DmaPortSocSystem
   };
+
+  // Default integration's membership mask, also usable directly by DV constraints.
+  function automatic bit [(1 << ASID_WIDTH)-1:0] dma_configured_asids();
+    dma_configured_asids = '0;
+    foreach (DmaPortDesc[p]) dma_configured_asids[DmaPortDesc[p].asid] = 1'b1;
+  endfunction
+  parameter bit [(1 << ASID_WIDTH)-1:0] ConfiguredAsids = dma_configured_asids();
+
+  function automatic bit dma_asid_configured(asid_encoding_e asid);
+    return ConfiguredAsids[asid];
+  endfunction
 
   function automatic int unsigned dma_count_class(dma_port_class_e c);
     dma_count_class = 0;

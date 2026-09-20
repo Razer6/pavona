@@ -51,10 +51,15 @@ class dma_seq_item extends uvm_sequence_item;
   rand asid_encoding_e dst_asid;
   // Variable to indicate if interrupt needs clearing before reading from FIFO
   rand bit [dma_reg_pkg::NumIntClearSources-1:0] clear_intr_src;
-  // Variable to indicate the bus on which each interrupt clearing address resides
-  // 0 - CTN/SYS fabric
-  // 1 - OT internal
-  rand bit [dma_reg_pkg::NumIntClearSources-1:0] clear_intr_bus;
+  // Encoded target port per interrupt source.
+  rand asid_encoding_e clear_intr_asid[dma_reg_pkg::NumIntClearSources];
+
+  constraint configured_asids_c {
+    // Generic traffic needs responder models; directed ASID tests cover invalid IDs.
+    ConfiguredAsids[src_asid] == 1;
+    ConfiguredAsids[dst_asid] == 1;
+    foreach (clear_intr_asid[i]) ConfiguredAsids[clear_intr_asid[i]] == 1;
+  }
   // Array with interrupt register addresses
   // size of array will be number of Handshake interrupts(dma_reg_pkg::NumIntClearSources)
   rand bit [31:0] intr_src_addr[];
@@ -102,7 +107,7 @@ class dma_seq_item extends uvm_sequence_item;
     `uvm_field_int(is_valid_config, UVM_DEFAULT)
     `uvm_field_int(handshake_intr_en, UVM_DEFAULT)
     `uvm_field_int(clear_intr_src, UVM_DEFAULT)
-    `uvm_field_int(clear_intr_bus, UVM_DEFAULT)
+    `uvm_field_sarray_enum(asid_encoding_e, clear_intr_asid, UVM_DEFAULT)
     `uvm_field_array_int(intr_src_addr, UVM_DEFAULT)
     `uvm_field_array_int(intr_src_wr_val, UVM_DEFAULT)
     `uvm_field_array_int(sha2_digest, UVM_DEFAULT)
@@ -408,7 +413,7 @@ class dma_seq_item extends uvm_sequence_item;
         $sformatf("\n\tmem_range_base          : 0x%08x", mem_range_base),
         $sformatf("\n\tmem_range_limit         : 0x%08x", mem_range_limit),
         $sformatf("\n\tclear_intr_src          : 0x%8x",  clear_intr_src),
-        $sformatf("\n\tclear_intr_bus          : 0x%8x",  clear_intr_bus),
+        $sformatf("\n\tclear_intr_asid         : %p", clear_intr_asid),
         $sformatf("\n\thandshake_intr_en       : 0x%08x", handshake_intr_en),
         $sformatf("\n\tlsio_trigger_i          : 0x%08x", lsio_trigger_i)
     };
@@ -496,11 +501,17 @@ class dma_seq_item extends uvm_sequence_item;
     // SoC System bus is full 64-bit (wide `dma_tl_agent`): no 4GiB-window restriction applied.
 
     // Check that the ASIDs are valid
-    if (!(dst_asid inside {OtInternalAddr, SocControlAddr, SocSystemAddr})) begin
+    if (handshake) begin
+      foreach (clear_intr_asid[i]) begin
+        if (clear_intr_src[i] && !dma_asid_configured(clear_intr_asid[i]))
+          valid_config = 0;
+      end
+    end
+    if (!dma_asid_configured(dst_asid)) begin
       `uvm_info(`gfn, " - Destination ASID invalid", UVM_MEDIUM)
       valid_config = 0;
     end
-    if (!(src_asid inside {OtInternalAddr, SocControlAddr, SocSystemAddr})) begin
+    if (!dma_asid_configured(src_asid)) begin
       `uvm_info(`gfn, " - Source ASID invalid", UVM_MEDIUM)
       valid_config = 0;
     end
@@ -663,6 +674,8 @@ class dma_seq_item extends uvm_sequence_item;
     dst_chunk_wrap = 0;
     src_chunk_wrap = 0;
     handshake = 0;
+    clear_intr_src = '0;
+    foreach (clear_intr_asid[i]) clear_intr_asid[i] = asid_encoding_e'('0);
     // reset non random variables
     valid_dma_config = 0;
     range_regwen = MuBi4True;

@@ -82,9 +82,7 @@ module dma
     end
   endfunction
 
-  // Count how many ports in `PortDesc` carry a given ASID. Used by elaboration-time
-  // assertions guarding the interrupt-clear port lookup, which requires both the
-  // OT-internal and SoC-control ASIDs to be present in `PortDesc`.
+  // Count descriptor matches to reject ambiguous ASID assignments at elaboration.
   function automatic int unsigned dma_count_asid_local(dma_pkg::asid_encoding_e asid);
     dma_count_asid_local = 0;
     for (int unsigned i = 0; i < NumPorts; i++) begin
@@ -640,21 +638,19 @@ module dma
     end
   end
 
-  // Interrupt-clear targeting: clear_intr_bus selects 1 -> OT-internal, 0 -> SoC-control;
-  // resolve those ASIDs to port indices via the descriptor lookup.
-  logic [PortIdxW-1:0] ot_internal_port_idx, soc_control_port_idx;
+  // Each interrupt source selects any configured port by its encoded ASID.
+  logic [PortIdxW-1:0] clr_port_idx;
+  logic clr_asid_valid;
   always_comb begin
-    ot_internal_port_idx = '0;
-    soc_control_port_idx = '0;
+    clr_port_idx = '0;
+    clr_asid_valid = 1'b0;
     for (int unsigned i = 0; i < NumPorts; i++) begin
-      if (PortDesc[i].asid == OtInternalAddr) ot_internal_port_idx = PortIdxW'(i);
-      if (PortDesc[i].asid == SocControlAddr) soc_control_port_idx = PortIdxW'(i);
+      if (PortDesc[i].asid == reg2hw.clear_intr_asid[clear_index_q].q) begin
+        clr_port_idx = PortIdxW'(i);
+        clr_asid_valid = 1'b1;
+      end
     end
   end
-
-  logic [PortIdxW-1:0] clr_port_idx;
-  assign clr_port_idx = reg2hw.clear_intr_bus.q[clear_index_q] ? ot_internal_port_idx
-                                                              : soc_control_port_idx;
 
   // Bus signals are asserted only when configured and active, so address/data are not
   // leaked to other buses: only the resolved port is driven, everything else is '0.
@@ -677,7 +673,7 @@ module dma
       port_wdata[dst_port_idx] = wr_issue_data;
       port_be   [dst_port_idx] = wr_issue_be;
     end
-    if (dma_clear_intr) begin
+    if (dma_clear_intr && clr_asid_valid) begin
       port_req  [clr_port_idx] = 1'b1;
       port_we   [clr_port_idx] = 1'b1;
       port_addr [clr_port_idx] = DMA_ADDR_WIDTH'(reg2hw.intr_src_addr[clear_index_q].q);
@@ -812,7 +808,10 @@ module dma
 
         DmaClearIntrSrc: begin
           // Clear the interrupt by writing
-          if (reg2hw.clear_intr_src.q[clear_index_q]) begin
+          if (reg2hw.clear_intr_src.q[clear_index_q] && !clr_asid_valid) begin
+            next_error[DmaAsidErr] = 1'b1;
+            ctrl_state_d = DmaError;
+          end else if (reg2hw.clear_intr_src.q[clear_index_q]) begin
             // Send 'clear interrupt' write to the bus selected by clr_port_idx
             dma_clear_intr = 1'b1;
 
@@ -1859,11 +1858,15 @@ module dma
   // A DMA with zero data ports is degenerate (PortDesc[NumPorts] requires NumPorts >= 1).
   `ASSERT_INIT(NumPortsNonZero_A, NumPorts >= 1)
 
-  // The interrupt-clear path resolves the OT-internal and SoC-control ASIDs to port
-  // indices via `PortDesc` (clr_port_idx). A miss would silently default to port 0, so
-  // require both clear-target ASIDs to be present in `PortDesc`.
-  `ASSERT_INIT(OtInternalPortPresent_A, dma_count_asid_local(dma_pkg::OtInternalAddr) >= 1)
-  `ASSERT_INIT(SocControlPortPresent_A, dma_count_asid_local(dma_pkg::SocControlAddr) >= 1)
+  `ASSERT_INIT(NumPortsMax_A, NumPorts <= dma_pkg::MaxPorts)
+  for (genvar p = 0; p < NumPorts; p++) begin : gen_asid_checks
+    `ASSERT_INIT(AsidCodeValid_A, dma_pkg::dma_asid_code_valid(PortDesc[p].asid))
+    `ASSERT_INIT(AsidUnique_A, dma_count_asid_local(PortDesc[p].asid) == 1)
+    for (genvar q = 0; q < p; q++) begin : gen_distance
+      `ASSERT_INIT(AsidDistance_A, $countones(PortDesc[p].asid ^ PortDesc[q].asid) >= 4)
+    end
+  end
+  `ASSERT(ClearReqValidIdx_A, dma_clear_intr |-> clr_asid_valid)
 
   // The wide a_user must occupy exactly TL_AUW bits, like the stock tl_a_user_t.
   `ASSERT_INIT(DmaAUserWidth_A, $bits(dma_tlul_pkg::dma_tl_a_user_t) == top_pkg::TL_AUW)

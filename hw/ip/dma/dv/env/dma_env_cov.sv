@@ -250,8 +250,7 @@ endgroup
 // Interrupt-related configuration used in hardware-handshaking mode.
 covergroup dma_interrupt_cg with function sample(
   bit [dma_reg_pkg::NumIntClearSources-1:0] handshake_interrupt_enable,
-  bit [dma_reg_pkg::NumIntClearSources-1:0] clear_intr_src,
-  bit [dma_reg_pkg::NumIntClearSources-1:0] clear_intr_bus
+  bit [dma_reg_pkg::NumIntClearSources-1:0] clear_intr_src
 );
   option.per_instance = 1;
   option.name = "dma_interrupt_cg";
@@ -264,10 +263,12 @@ covergroup dma_interrupt_cg with function sample(
     `DMA_ENV_COV_INTERRUPT_BINS
   }
 
-  cp_clear_intr_bus: coverpoint clear_intr_bus {
-    `DMA_ENV_COV_INTERRUPT_BINS
-  }
 
+endgroup
+
+covergroup dma_clear_asid_cg with function sample(asid_encoding_e asid);
+  option.per_instance = 1;
+  cp_asid: coverpoint asid;
 endgroup
 
 // Interrupt-clearing address and data.
@@ -304,6 +305,7 @@ class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
   dma_status_cg status_cg;
   dma_error_code_cg error_code_cg;
   dma_interrupt_cg interrupt_cg;
+  dma_clear_asid_cg clear_asid_cg;
   dma_intr_src_cg intr_src_cg;
 
   function new(string name, uvm_component parent);
@@ -313,6 +315,7 @@ class dma_env_cov extends cip_base_env_cov #(.CFG_T(dma_env_cfg));
     status_cg = new();
     error_code_cg = new();
     interrupt_cg = new();
+    clear_asid_cg = new();
     intr_src_cg = new();
   endfunction: new
 
