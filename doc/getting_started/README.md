@@ -168,6 +168,15 @@ INFO: Build completed successfully, 49 total actions
 The output (with some trimming) shows the files that were built.
 You can examine the RISC-V (dis)assembly in the `bazel-bin/sw/device/examples/hello_world/hello_world_sim_verilator.dis` file.
 
+> [!TIP]
+> By default, Verilator only uses a single core for simulation.
+> Modern machines have many cores, and you can make use of them by using the `--//hw:verilator_options` flag.
+> Create a file named `.bazelrc-site` containing a line like the following:
+> ```
+> common --//hw:verilator_options=--threads,8
+> ```
+> The above example would appropriate be for a machine with 8 cores (you can determine the number of cores in your CPU by running the `nproc` command).
+
 ### Run a test on Verilator
 
 Run the "Hello, World!" binary by using Bazel:

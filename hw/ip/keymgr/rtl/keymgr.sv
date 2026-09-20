@@ -608,6 +608,7 @@ module keymgr
     .prng_en_o(sideload_lfsr_en),
     .aes_key_o,
     .acc_key_o,
+    .dma_key_o(),  // keymgr (non-DPE) has no DMA sideload destination
     .kmac_key_o,
     .sideload_sel_err_o(sideload_sel_err),
     .fsm_err_o(sideload_fsm_err)
@@ -742,7 +743,7 @@ module keymgr
   prim_alert_sender #(
     .AsyncOn(AlertAsyncOn[1]),
     .SkewCycles(AlertSkewCycles),
-    .IsFatal(1)
+    .IsFatal(AlertIsFatal[1])
   ) u_fault_alert (
     .clk_i,
     .rst_ni,
@@ -760,7 +761,7 @@ module keymgr
   prim_alert_sender #(
     .AsyncOn(AlertAsyncOn[0]),
     .SkewCycles(AlertSkewCycles),
-    .IsFatal(0)
+    .IsFatal(AlertIsFatal[0])
   ) u_op_err_alert (
     .clk_i,
     .rst_ni,

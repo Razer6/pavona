@@ -96,7 +96,6 @@ jobs:
         run: ./ci/scripts/check-countermeasures.sh scafi_deprecated
       - name: Bazel test suite tags
         run: ./ci/scripts/check_bazel_test_suites.py
-        continue-on-error: true
       # See #21973: disabled until Verilator tags are fixed.
       # - name: Check Bazel tags
       #   run: ./ci/scripts/check-bazel-tags.sh
@@ -107,7 +106,6 @@ jobs:
         run: ./ci/scripts/check_bazel_target_names.py
       - name: DV software images
         run: ./ci/scripts/check_dv_sw_images.sh
-        continue-on-error: true
       - name: Build documentation
         run: ./ci/scripts/build-docs.sh
       - name: Generated files
@@ -302,7 +300,7 @@ jobs:
     if: ${{ github.event_name != 'merge_group' }}
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare environment
         uses: ./.github/actions/prepare-env
       - name: Run fast Verilator tests

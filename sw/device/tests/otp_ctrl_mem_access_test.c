@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdbool.h>
 
+#include "hw/top/dt/otp_ctrl.h"
 #include "sw/device/lib/base/bitfield.h"
 #include "sw/device/lib/base/macros.h"
 #include "sw/device/lib/base/memory.h"
@@ -41,8 +42,7 @@ typedef struct partition_data {
 } partition_data_t;
 
 static void peripheral_handles_init(void) {
-  CHECK_DIF_OK(dif_otp_ctrl_init(
-      mmio_region_from_addr(TOP_EGRET_OTP_CTRL_CORE_BASE_ADDR), &otp));
+  CHECK_DIF_OK(dif_otp_ctrl_init_from_dt(kDtOtpCtrl, &otp));
   CHECK_DIF_OK(dif_rstmgr_init(
       mmio_region_from_addr(TOP_EGRET_RSTMGR_AON_BASE_ADDR), &rstmgr));
 }
@@ -87,6 +87,10 @@ static void otp_ctrl_dai_disable_test(uint32_t last_dai_value) {
     otp_partition_t partition = (otp_partition_t)i;
     dt_otp_partition_info_t partition_info =
         dt_otp_ctrl_partition(kDtOtpCtrl, partition);
+    // TODO: cover the secret partitions, which need 64-bit reads.
+    if (partition_info.align_mask != 0x3) {
+      continue;
+    }
     size_t partition_len = partition_info.size;
     if (partition_info.sw_digest || partition_info.hw_digest) {
       partition_len += sizeof(uint64_t);
@@ -94,6 +98,7 @@ static void otp_ctrl_dai_disable_test(uint32_t last_dai_value) {
     if (partition_info.zeroizable) {
       partition_len += sizeof(uint64_t);
     }
+    partition_len /= sizeof(uint32_t);
     LOG_INFO("Checking partition %d.", partition);
     uint32_t readout[partition_len];
     CHECK_STATUS_OK(otp_ctrl_testutils_dai_read32_array(
