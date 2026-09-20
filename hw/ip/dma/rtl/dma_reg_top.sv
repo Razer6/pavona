@@ -62,9 +62,9 @@ module dma_reg_top
 
   // also check for spurious write enables
   logic reg_we_err;
-  logic [62:0] reg_we_check;
+  logic [72:0] reg_we_check;
   prim_reg_we_check #(
-    .OneHotWidth(63)
+    .OneHotWidth(73)
   ) u_prim_reg_we_check (
     .clk_i(clk_i),
     .rst_ni(rst_ni),
@@ -161,10 +161,10 @@ module dma_reg_top
   logic [31:0] dst_addr_hi_qs;
   logic [31:0] dst_addr_hi_wd;
   logic addr_space_id_we;
-  logic [3:0] addr_space_id_src_asid_qs;
-  logic [3:0] addr_space_id_src_asid_wd;
-  logic [3:0] addr_space_id_dst_asid_qs;
-  logic [3:0] addr_space_id_dst_asid_wd;
+  logic [7:0] addr_space_id_src_asid_qs;
+  logic [7:0] addr_space_id_src_asid_wd;
+  logic [7:0] addr_space_id_dst_asid_qs;
+  logic [7:0] addr_space_id_dst_asid_wd;
   logic enabled_memory_range_base_we;
   logic [31:0] enabled_memory_range_base_qs;
   logic [31:0] enabled_memory_range_base_wd;
@@ -251,9 +251,6 @@ module dma_reg_top
   logic clear_intr_src_we;
   logic [10:0] clear_intr_src_qs;
   logic [10:0] clear_intr_src_wd;
-  logic clear_intr_bus_we;
-  logic [10:0] clear_intr_bus_qs;
-  logic [10:0] clear_intr_bus_wd;
   logic intr_src_addr_0_we;
   logic [31:0] intr_src_addr_0_qs;
   logic [31:0] intr_src_addr_0_wd;
@@ -320,6 +317,39 @@ module dma_reg_top
   logic intr_src_wr_val_10_we;
   logic [31:0] intr_src_wr_val_10_qs;
   logic [31:0] intr_src_wr_val_10_wd;
+  logic clear_intr_asid_0_we;
+  logic [7:0] clear_intr_asid_0_qs;
+  logic [7:0] clear_intr_asid_0_wd;
+  logic clear_intr_asid_1_we;
+  logic [7:0] clear_intr_asid_1_qs;
+  logic [7:0] clear_intr_asid_1_wd;
+  logic clear_intr_asid_2_we;
+  logic [7:0] clear_intr_asid_2_qs;
+  logic [7:0] clear_intr_asid_2_wd;
+  logic clear_intr_asid_3_we;
+  logic [7:0] clear_intr_asid_3_qs;
+  logic [7:0] clear_intr_asid_3_wd;
+  logic clear_intr_asid_4_we;
+  logic [7:0] clear_intr_asid_4_qs;
+  logic [7:0] clear_intr_asid_4_wd;
+  logic clear_intr_asid_5_we;
+  logic [7:0] clear_intr_asid_5_qs;
+  logic [7:0] clear_intr_asid_5_wd;
+  logic clear_intr_asid_6_we;
+  logic [7:0] clear_intr_asid_6_qs;
+  logic [7:0] clear_intr_asid_6_wd;
+  logic clear_intr_asid_7_we;
+  logic [7:0] clear_intr_asid_7_qs;
+  logic [7:0] clear_intr_asid_7_wd;
+  logic clear_intr_asid_8_we;
+  logic [7:0] clear_intr_asid_8_qs;
+  logic [7:0] clear_intr_asid_8_wd;
+  logic clear_intr_asid_9_we;
+  logic [7:0] clear_intr_asid_9_qs;
+  logic [7:0] clear_intr_asid_9_wd;
+  logic clear_intr_asid_10_we;
+  logic [7:0] clear_intr_asid_10_qs;
+  logic [7:0] clear_intr_asid_10_wd;
 
   // Register instances
   // R[intr_state]: V(False)
@@ -699,11 +729,11 @@ module dma_reg_top
   assign addr_space_id_gated_we =
     addr_space_id_we &
           prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
-  //   F[src_asid]: 3:0
+  //   F[src_asid]: 7:0
   prim_subreg #(
-    .DW      (4),
+    .DW      (8),
     .SwAccess(prim_subreg_pkg::SwAccessRW),
-    .RESVAL  (4'h7),
+    .RESVAL  (8'h3),
     .Mubi    (1'b0)
   ) u_addr_space_id_src_asid (
     .clk_i   (clk_i),
@@ -726,11 +756,11 @@ module dma_reg_top
     .qs     (addr_space_id_src_asid_qs)
   );
 
-  //   F[dst_asid]: 7:4
+  //   F[dst_asid]: 15:8
   prim_subreg #(
-    .DW      (4),
+    .DW      (8),
     .SwAccess(prim_subreg_pkg::SwAccessRW),
-    .RESVAL  (4'h7),
+    .RESVAL  (8'h3),
     .Mubi    (1'b0)
   ) u_addr_space_id_dst_asid (
     .clk_i   (clk_i),
@@ -2243,39 +2273,6 @@ module dma_reg_top
   );
 
 
-  // R[clear_intr_bus]: V(False)
-  // Create REGWEN-gated WE signal
-  logic clear_intr_bus_gated_we;
-  assign clear_intr_bus_gated_we =
-    clear_intr_bus_we &
-          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
-  prim_subreg #(
-    .DW      (11),
-    .SwAccess(prim_subreg_pkg::SwAccessRW),
-    .RESVAL  (11'h0),
-    .Mubi    (1'b0)
-  ) u_clear_intr_bus (
-    .clk_i   (clk_i),
-    .rst_ni  (rst_ni),
-
-    // from register interface
-    .we     (clear_intr_bus_gated_we),
-    .wd     (clear_intr_bus_wd),
-
-    // from internal hardware
-    .de     (1'b0),
-    .d      ('0),
-
-    // to internal hardware
-    .qe     (),
-    .q      (reg2hw.clear_intr_bus.q),
-    .ds     (),
-
-    // to register interface (read)
-    .qs     (clear_intr_bus_qs)
-  );
-
-
   // Subregister 0 of Multireg intr_src_addr
   // R[intr_src_addr_0]: V(False)
   // Create REGWEN-gated WE signal
@@ -3024,13 +3021,387 @@ module dma_reg_top
   );
 
 
+  // Subregister 0 of Multireg clear_intr_asid
+  // R[clear_intr_asid_0]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_0_gated_we;
+  assign clear_intr_asid_0_gated_we =
+    clear_intr_asid_0_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_0 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
 
-  logic [62:0] addr_hit;
+    // from register interface
+    .we     (clear_intr_asid_0_gated_we),
+    .wd     (clear_intr_asid_0_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[0].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_0_qs)
+  );
+
+
+  // Subregister 1 of Multireg clear_intr_asid
+  // R[clear_intr_asid_1]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_1_gated_we;
+  assign clear_intr_asid_1_gated_we =
+    clear_intr_asid_1_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_1 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_1_gated_we),
+    .wd     (clear_intr_asid_1_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[1].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_1_qs)
+  );
+
+
+  // Subregister 2 of Multireg clear_intr_asid
+  // R[clear_intr_asid_2]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_2_gated_we;
+  assign clear_intr_asid_2_gated_we =
+    clear_intr_asid_2_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_2 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_2_gated_we),
+    .wd     (clear_intr_asid_2_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[2].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_2_qs)
+  );
+
+
+  // Subregister 3 of Multireg clear_intr_asid
+  // R[clear_intr_asid_3]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_3_gated_we;
+  assign clear_intr_asid_3_gated_we =
+    clear_intr_asid_3_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_3 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_3_gated_we),
+    .wd     (clear_intr_asid_3_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[3].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_3_qs)
+  );
+
+
+  // Subregister 4 of Multireg clear_intr_asid
+  // R[clear_intr_asid_4]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_4_gated_we;
+  assign clear_intr_asid_4_gated_we =
+    clear_intr_asid_4_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_4 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_4_gated_we),
+    .wd     (clear_intr_asid_4_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[4].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_4_qs)
+  );
+
+
+  // Subregister 5 of Multireg clear_intr_asid
+  // R[clear_intr_asid_5]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_5_gated_we;
+  assign clear_intr_asid_5_gated_we =
+    clear_intr_asid_5_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_5 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_5_gated_we),
+    .wd     (clear_intr_asid_5_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[5].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_5_qs)
+  );
+
+
+  // Subregister 6 of Multireg clear_intr_asid
+  // R[clear_intr_asid_6]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_6_gated_we;
+  assign clear_intr_asid_6_gated_we =
+    clear_intr_asid_6_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_6 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_6_gated_we),
+    .wd     (clear_intr_asid_6_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[6].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_6_qs)
+  );
+
+
+  // Subregister 7 of Multireg clear_intr_asid
+  // R[clear_intr_asid_7]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_7_gated_we;
+  assign clear_intr_asid_7_gated_we =
+    clear_intr_asid_7_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_7 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_7_gated_we),
+    .wd     (clear_intr_asid_7_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[7].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_7_qs)
+  );
+
+
+  // Subregister 8 of Multireg clear_intr_asid
+  // R[clear_intr_asid_8]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_8_gated_we;
+  assign clear_intr_asid_8_gated_we =
+    clear_intr_asid_8_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_8 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_8_gated_we),
+    .wd     (clear_intr_asid_8_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[8].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_8_qs)
+  );
+
+
+  // Subregister 9 of Multireg clear_intr_asid
+  // R[clear_intr_asid_9]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_9_gated_we;
+  assign clear_intr_asid_9_gated_we =
+    clear_intr_asid_9_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_9 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_9_gated_we),
+    .wd     (clear_intr_asid_9_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[9].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_9_qs)
+  );
+
+
+  // Subregister 10 of Multireg clear_intr_asid
+  // R[clear_intr_asid_10]: V(False)
+  // Create REGWEN-gated WE signal
+  logic clear_intr_asid_10_gated_we;
+  assign clear_intr_asid_10_gated_we =
+    clear_intr_asid_10_we &
+          prim_mubi_pkg::mubi4_test_true_strict(prim_mubi_pkg::mubi4_t'(cfg_regwen_qs));
+  prim_subreg #(
+    .DW      (8),
+    .SwAccess(prim_subreg_pkg::SwAccessRW),
+    .RESVAL  (8'h0),
+    .Mubi    (1'b0)
+  ) u_clear_intr_asid_10 (
+    .clk_i   (clk_i),
+    .rst_ni  (rst_ni),
+
+    // from register interface
+    .we     (clear_intr_asid_10_gated_we),
+    .wd     (clear_intr_asid_10_wd),
+
+    // from internal hardware
+    .de     (1'b0),
+    .d      ('0),
+
+    // to internal hardware
+    .qe     (),
+    .q      (reg2hw.clear_intr_asid[10].q),
+    .ds     (),
+
+    // to register interface (read)
+    .qs     (clear_intr_asid_10_qs)
+  );
+
+
+
+  logic [72:0] addr_hit;
   top_racl_pkg::racl_role_vec_t racl_role_vec;
   top_racl_pkg::racl_role_t racl_role;
 
-  logic [62:0] racl_addr_hit_read;
-  logic [62:0] racl_addr_hit_write;
+  logic [72:0] racl_addr_hit_read;
+  logic [72:0] racl_addr_hit_write;
 
   if (EnableRacl) begin : gen_racl_role_logic
     // Retrieve RACL role from user bits and one-hot encode that for the comparison bitmap
@@ -3091,32 +3462,42 @@ module dma_reg_top
     addr_hit[37] = (reg_addr == DMA_SHA2_DIGEST_15_OFFSET);
     addr_hit[38] = (reg_addr == DMA_HANDSHAKE_INTR_ENABLE_OFFSET);
     addr_hit[39] = (reg_addr == DMA_CLEAR_INTR_SRC_OFFSET);
-    addr_hit[40] = (reg_addr == DMA_CLEAR_INTR_BUS_OFFSET);
-    addr_hit[41] = (reg_addr == DMA_INTR_SRC_ADDR_0_OFFSET);
-    addr_hit[42] = (reg_addr == DMA_INTR_SRC_ADDR_1_OFFSET);
-    addr_hit[43] = (reg_addr == DMA_INTR_SRC_ADDR_2_OFFSET);
-    addr_hit[44] = (reg_addr == DMA_INTR_SRC_ADDR_3_OFFSET);
-    addr_hit[45] = (reg_addr == DMA_INTR_SRC_ADDR_4_OFFSET);
-    addr_hit[46] = (reg_addr == DMA_INTR_SRC_ADDR_5_OFFSET);
-    addr_hit[47] = (reg_addr == DMA_INTR_SRC_ADDR_6_OFFSET);
-    addr_hit[48] = (reg_addr == DMA_INTR_SRC_ADDR_7_OFFSET);
-    addr_hit[49] = (reg_addr == DMA_INTR_SRC_ADDR_8_OFFSET);
-    addr_hit[50] = (reg_addr == DMA_INTR_SRC_ADDR_9_OFFSET);
-    addr_hit[51] = (reg_addr == DMA_INTR_SRC_ADDR_10_OFFSET);
-    addr_hit[52] = (reg_addr == DMA_INTR_SRC_WR_VAL_0_OFFSET);
-    addr_hit[53] = (reg_addr == DMA_INTR_SRC_WR_VAL_1_OFFSET);
-    addr_hit[54] = (reg_addr == DMA_INTR_SRC_WR_VAL_2_OFFSET);
-    addr_hit[55] = (reg_addr == DMA_INTR_SRC_WR_VAL_3_OFFSET);
-    addr_hit[56] = (reg_addr == DMA_INTR_SRC_WR_VAL_4_OFFSET);
-    addr_hit[57] = (reg_addr == DMA_INTR_SRC_WR_VAL_5_OFFSET);
-    addr_hit[58] = (reg_addr == DMA_INTR_SRC_WR_VAL_6_OFFSET);
-    addr_hit[59] = (reg_addr == DMA_INTR_SRC_WR_VAL_7_OFFSET);
-    addr_hit[60] = (reg_addr == DMA_INTR_SRC_WR_VAL_8_OFFSET);
-    addr_hit[61] = (reg_addr == DMA_INTR_SRC_WR_VAL_9_OFFSET);
-    addr_hit[62] = (reg_addr == DMA_INTR_SRC_WR_VAL_10_OFFSET);
+    addr_hit[40] = (reg_addr == DMA_INTR_SRC_ADDR_0_OFFSET);
+    addr_hit[41] = (reg_addr == DMA_INTR_SRC_ADDR_1_OFFSET);
+    addr_hit[42] = (reg_addr == DMA_INTR_SRC_ADDR_2_OFFSET);
+    addr_hit[43] = (reg_addr == DMA_INTR_SRC_ADDR_3_OFFSET);
+    addr_hit[44] = (reg_addr == DMA_INTR_SRC_ADDR_4_OFFSET);
+    addr_hit[45] = (reg_addr == DMA_INTR_SRC_ADDR_5_OFFSET);
+    addr_hit[46] = (reg_addr == DMA_INTR_SRC_ADDR_6_OFFSET);
+    addr_hit[47] = (reg_addr == DMA_INTR_SRC_ADDR_7_OFFSET);
+    addr_hit[48] = (reg_addr == DMA_INTR_SRC_ADDR_8_OFFSET);
+    addr_hit[49] = (reg_addr == DMA_INTR_SRC_ADDR_9_OFFSET);
+    addr_hit[50] = (reg_addr == DMA_INTR_SRC_ADDR_10_OFFSET);
+    addr_hit[51] = (reg_addr == DMA_INTR_SRC_WR_VAL_0_OFFSET);
+    addr_hit[52] = (reg_addr == DMA_INTR_SRC_WR_VAL_1_OFFSET);
+    addr_hit[53] = (reg_addr == DMA_INTR_SRC_WR_VAL_2_OFFSET);
+    addr_hit[54] = (reg_addr == DMA_INTR_SRC_WR_VAL_3_OFFSET);
+    addr_hit[55] = (reg_addr == DMA_INTR_SRC_WR_VAL_4_OFFSET);
+    addr_hit[56] = (reg_addr == DMA_INTR_SRC_WR_VAL_5_OFFSET);
+    addr_hit[57] = (reg_addr == DMA_INTR_SRC_WR_VAL_6_OFFSET);
+    addr_hit[58] = (reg_addr == DMA_INTR_SRC_WR_VAL_7_OFFSET);
+    addr_hit[59] = (reg_addr == DMA_INTR_SRC_WR_VAL_8_OFFSET);
+    addr_hit[60] = (reg_addr == DMA_INTR_SRC_WR_VAL_9_OFFSET);
+    addr_hit[61] = (reg_addr == DMA_INTR_SRC_WR_VAL_10_OFFSET);
+    addr_hit[62] = (reg_addr == DMA_CLEAR_INTR_ASID_0_OFFSET);
+    addr_hit[63] = (reg_addr == DMA_CLEAR_INTR_ASID_1_OFFSET);
+    addr_hit[64] = (reg_addr == DMA_CLEAR_INTR_ASID_2_OFFSET);
+    addr_hit[65] = (reg_addr == DMA_CLEAR_INTR_ASID_3_OFFSET);
+    addr_hit[66] = (reg_addr == DMA_CLEAR_INTR_ASID_4_OFFSET);
+    addr_hit[67] = (reg_addr == DMA_CLEAR_INTR_ASID_5_OFFSET);
+    addr_hit[68] = (reg_addr == DMA_CLEAR_INTR_ASID_6_OFFSET);
+    addr_hit[69] = (reg_addr == DMA_CLEAR_INTR_ASID_7_OFFSET);
+    addr_hit[70] = (reg_addr == DMA_CLEAR_INTR_ASID_8_OFFSET);
+    addr_hit[71] = (reg_addr == DMA_CLEAR_INTR_ASID_9_OFFSET);
+    addr_hit[72] = (reg_addr == DMA_CLEAR_INTR_ASID_10_OFFSET);
 
     if (EnableRacl) begin : gen_racl_hit
-      for (int unsigned slice_idx = 0; slice_idx < 63; slice_idx++) begin
+      for (int unsigned slice_idx = 0; slice_idx < 73; slice_idx++) begin
         racl_addr_hit_read[slice_idx] =
             addr_hit[slice_idx] & (|(racl_policies_i[RaclPolicySelVec[slice_idx]].read_perm
                                       & racl_role_vec));
@@ -3211,7 +3592,17 @@ module dma_reg_top
                (racl_addr_hit_write[59] & (|(DMA_PERMIT[59] & ~reg_be))) |
                (racl_addr_hit_write[60] & (|(DMA_PERMIT[60] & ~reg_be))) |
                (racl_addr_hit_write[61] & (|(DMA_PERMIT[61] & ~reg_be))) |
-               (racl_addr_hit_write[62] & (|(DMA_PERMIT[62] & ~reg_be)))));
+               (racl_addr_hit_write[62] & (|(DMA_PERMIT[62] & ~reg_be))) |
+               (racl_addr_hit_write[63] & (|(DMA_PERMIT[63] & ~reg_be))) |
+               (racl_addr_hit_write[64] & (|(DMA_PERMIT[64] & ~reg_be))) |
+               (racl_addr_hit_write[65] & (|(DMA_PERMIT[65] & ~reg_be))) |
+               (racl_addr_hit_write[66] & (|(DMA_PERMIT[66] & ~reg_be))) |
+               (racl_addr_hit_write[67] & (|(DMA_PERMIT[67] & ~reg_be))) |
+               (racl_addr_hit_write[68] & (|(DMA_PERMIT[68] & ~reg_be))) |
+               (racl_addr_hit_write[69] & (|(DMA_PERMIT[69] & ~reg_be))) |
+               (racl_addr_hit_write[70] & (|(DMA_PERMIT[70] & ~reg_be))) |
+               (racl_addr_hit_write[71] & (|(DMA_PERMIT[71] & ~reg_be))) |
+               (racl_addr_hit_write[72] & (|(DMA_PERMIT[72] & ~reg_be)))));
   end
 
   // Generate write-enables
@@ -3246,9 +3637,9 @@ module dma_reg_top
   assign dst_addr_hi_wd = reg_wdata[31:0];
   assign addr_space_id_we = racl_addr_hit_write[8] & reg_we & !reg_error;
 
-  assign addr_space_id_src_asid_wd = reg_wdata[3:0];
+  assign addr_space_id_src_asid_wd = reg_wdata[7:0];
 
-  assign addr_space_id_dst_asid_wd = reg_wdata[7:4];
+  assign addr_space_id_dst_asid_wd = reg_wdata[15:8];
   assign enabled_memory_range_base_we = racl_addr_hit_write[9] & reg_we & !reg_error;
 
   assign enabled_memory_range_base_wd = reg_wdata[31:0];
@@ -3309,75 +3700,105 @@ module dma_reg_top
   assign clear_intr_src_we = racl_addr_hit_write[39] & reg_we & !reg_error;
 
   assign clear_intr_src_wd = reg_wdata[10:0];
-  assign clear_intr_bus_we = racl_addr_hit_write[40] & reg_we & !reg_error;
-
-  assign clear_intr_bus_wd = reg_wdata[10:0];
-  assign intr_src_addr_0_we = racl_addr_hit_write[41] & reg_we & !reg_error;
+  assign intr_src_addr_0_we = racl_addr_hit_write[40] & reg_we & !reg_error;
 
   assign intr_src_addr_0_wd = reg_wdata[31:0];
-  assign intr_src_addr_1_we = racl_addr_hit_write[42] & reg_we & !reg_error;
+  assign intr_src_addr_1_we = racl_addr_hit_write[41] & reg_we & !reg_error;
 
   assign intr_src_addr_1_wd = reg_wdata[31:0];
-  assign intr_src_addr_2_we = racl_addr_hit_write[43] & reg_we & !reg_error;
+  assign intr_src_addr_2_we = racl_addr_hit_write[42] & reg_we & !reg_error;
 
   assign intr_src_addr_2_wd = reg_wdata[31:0];
-  assign intr_src_addr_3_we = racl_addr_hit_write[44] & reg_we & !reg_error;
+  assign intr_src_addr_3_we = racl_addr_hit_write[43] & reg_we & !reg_error;
 
   assign intr_src_addr_3_wd = reg_wdata[31:0];
-  assign intr_src_addr_4_we = racl_addr_hit_write[45] & reg_we & !reg_error;
+  assign intr_src_addr_4_we = racl_addr_hit_write[44] & reg_we & !reg_error;
 
   assign intr_src_addr_4_wd = reg_wdata[31:0];
-  assign intr_src_addr_5_we = racl_addr_hit_write[46] & reg_we & !reg_error;
+  assign intr_src_addr_5_we = racl_addr_hit_write[45] & reg_we & !reg_error;
 
   assign intr_src_addr_5_wd = reg_wdata[31:0];
-  assign intr_src_addr_6_we = racl_addr_hit_write[47] & reg_we & !reg_error;
+  assign intr_src_addr_6_we = racl_addr_hit_write[46] & reg_we & !reg_error;
 
   assign intr_src_addr_6_wd = reg_wdata[31:0];
-  assign intr_src_addr_7_we = racl_addr_hit_write[48] & reg_we & !reg_error;
+  assign intr_src_addr_7_we = racl_addr_hit_write[47] & reg_we & !reg_error;
 
   assign intr_src_addr_7_wd = reg_wdata[31:0];
-  assign intr_src_addr_8_we = racl_addr_hit_write[49] & reg_we & !reg_error;
+  assign intr_src_addr_8_we = racl_addr_hit_write[48] & reg_we & !reg_error;
 
   assign intr_src_addr_8_wd = reg_wdata[31:0];
-  assign intr_src_addr_9_we = racl_addr_hit_write[50] & reg_we & !reg_error;
+  assign intr_src_addr_9_we = racl_addr_hit_write[49] & reg_we & !reg_error;
 
   assign intr_src_addr_9_wd = reg_wdata[31:0];
-  assign intr_src_addr_10_we = racl_addr_hit_write[51] & reg_we & !reg_error;
+  assign intr_src_addr_10_we = racl_addr_hit_write[50] & reg_we & !reg_error;
 
   assign intr_src_addr_10_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_0_we = racl_addr_hit_write[52] & reg_we & !reg_error;
+  assign intr_src_wr_val_0_we = racl_addr_hit_write[51] & reg_we & !reg_error;
 
   assign intr_src_wr_val_0_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_1_we = racl_addr_hit_write[53] & reg_we & !reg_error;
+  assign intr_src_wr_val_1_we = racl_addr_hit_write[52] & reg_we & !reg_error;
 
   assign intr_src_wr_val_1_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_2_we = racl_addr_hit_write[54] & reg_we & !reg_error;
+  assign intr_src_wr_val_2_we = racl_addr_hit_write[53] & reg_we & !reg_error;
 
   assign intr_src_wr_val_2_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_3_we = racl_addr_hit_write[55] & reg_we & !reg_error;
+  assign intr_src_wr_val_3_we = racl_addr_hit_write[54] & reg_we & !reg_error;
 
   assign intr_src_wr_val_3_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_4_we = racl_addr_hit_write[56] & reg_we & !reg_error;
+  assign intr_src_wr_val_4_we = racl_addr_hit_write[55] & reg_we & !reg_error;
 
   assign intr_src_wr_val_4_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_5_we = racl_addr_hit_write[57] & reg_we & !reg_error;
+  assign intr_src_wr_val_5_we = racl_addr_hit_write[56] & reg_we & !reg_error;
 
   assign intr_src_wr_val_5_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_6_we = racl_addr_hit_write[58] & reg_we & !reg_error;
+  assign intr_src_wr_val_6_we = racl_addr_hit_write[57] & reg_we & !reg_error;
 
   assign intr_src_wr_val_6_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_7_we = racl_addr_hit_write[59] & reg_we & !reg_error;
+  assign intr_src_wr_val_7_we = racl_addr_hit_write[58] & reg_we & !reg_error;
 
   assign intr_src_wr_val_7_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_8_we = racl_addr_hit_write[60] & reg_we & !reg_error;
+  assign intr_src_wr_val_8_we = racl_addr_hit_write[59] & reg_we & !reg_error;
 
   assign intr_src_wr_val_8_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_9_we = racl_addr_hit_write[61] & reg_we & !reg_error;
+  assign intr_src_wr_val_9_we = racl_addr_hit_write[60] & reg_we & !reg_error;
 
   assign intr_src_wr_val_9_wd = reg_wdata[31:0];
-  assign intr_src_wr_val_10_we = racl_addr_hit_write[62] & reg_we & !reg_error;
+  assign intr_src_wr_val_10_we = racl_addr_hit_write[61] & reg_we & !reg_error;
 
   assign intr_src_wr_val_10_wd = reg_wdata[31:0];
+  assign clear_intr_asid_0_we = racl_addr_hit_write[62] & reg_we & !reg_error;
+
+  assign clear_intr_asid_0_wd = reg_wdata[7:0];
+  assign clear_intr_asid_1_we = racl_addr_hit_write[63] & reg_we & !reg_error;
+
+  assign clear_intr_asid_1_wd = reg_wdata[7:0];
+  assign clear_intr_asid_2_we = racl_addr_hit_write[64] & reg_we & !reg_error;
+
+  assign clear_intr_asid_2_wd = reg_wdata[7:0];
+  assign clear_intr_asid_3_we = racl_addr_hit_write[65] & reg_we & !reg_error;
+
+  assign clear_intr_asid_3_wd = reg_wdata[7:0];
+  assign clear_intr_asid_4_we = racl_addr_hit_write[66] & reg_we & !reg_error;
+
+  assign clear_intr_asid_4_wd = reg_wdata[7:0];
+  assign clear_intr_asid_5_we = racl_addr_hit_write[67] & reg_we & !reg_error;
+
+  assign clear_intr_asid_5_wd = reg_wdata[7:0];
+  assign clear_intr_asid_6_we = racl_addr_hit_write[68] & reg_we & !reg_error;
+
+  assign clear_intr_asid_6_wd = reg_wdata[7:0];
+  assign clear_intr_asid_7_we = racl_addr_hit_write[69] & reg_we & !reg_error;
+
+  assign clear_intr_asid_7_wd = reg_wdata[7:0];
+  assign clear_intr_asid_8_we = racl_addr_hit_write[70] & reg_we & !reg_error;
+
+  assign clear_intr_asid_8_wd = reg_wdata[7:0];
+  assign clear_intr_asid_9_we = racl_addr_hit_write[71] & reg_we & !reg_error;
+
+  assign clear_intr_asid_9_wd = reg_wdata[7:0];
+  assign clear_intr_asid_10_we = racl_addr_hit_write[72] & reg_we & !reg_error;
+
+  assign clear_intr_asid_10_wd = reg_wdata[7:0];
 
   // Assign write-enables to checker logic vector.
   always_comb begin
@@ -3421,29 +3842,39 @@ module dma_reg_top
     reg_we_check[37] = 1'b0;
     reg_we_check[38] = handshake_intr_enable_gated_we;
     reg_we_check[39] = clear_intr_src_gated_we;
-    reg_we_check[40] = clear_intr_bus_gated_we;
-    reg_we_check[41] = intr_src_addr_0_gated_we;
-    reg_we_check[42] = intr_src_addr_1_gated_we;
-    reg_we_check[43] = intr_src_addr_2_gated_we;
-    reg_we_check[44] = intr_src_addr_3_gated_we;
-    reg_we_check[45] = intr_src_addr_4_gated_we;
-    reg_we_check[46] = intr_src_addr_5_gated_we;
-    reg_we_check[47] = intr_src_addr_6_gated_we;
-    reg_we_check[48] = intr_src_addr_7_gated_we;
-    reg_we_check[49] = intr_src_addr_8_gated_we;
-    reg_we_check[50] = intr_src_addr_9_gated_we;
-    reg_we_check[51] = intr_src_addr_10_gated_we;
-    reg_we_check[52] = intr_src_wr_val_0_gated_we;
-    reg_we_check[53] = intr_src_wr_val_1_gated_we;
-    reg_we_check[54] = intr_src_wr_val_2_gated_we;
-    reg_we_check[55] = intr_src_wr_val_3_gated_we;
-    reg_we_check[56] = intr_src_wr_val_4_gated_we;
-    reg_we_check[57] = intr_src_wr_val_5_gated_we;
-    reg_we_check[58] = intr_src_wr_val_6_gated_we;
-    reg_we_check[59] = intr_src_wr_val_7_gated_we;
-    reg_we_check[60] = intr_src_wr_val_8_gated_we;
-    reg_we_check[61] = intr_src_wr_val_9_gated_we;
-    reg_we_check[62] = intr_src_wr_val_10_gated_we;
+    reg_we_check[40] = intr_src_addr_0_gated_we;
+    reg_we_check[41] = intr_src_addr_1_gated_we;
+    reg_we_check[42] = intr_src_addr_2_gated_we;
+    reg_we_check[43] = intr_src_addr_3_gated_we;
+    reg_we_check[44] = intr_src_addr_4_gated_we;
+    reg_we_check[45] = intr_src_addr_5_gated_we;
+    reg_we_check[46] = intr_src_addr_6_gated_we;
+    reg_we_check[47] = intr_src_addr_7_gated_we;
+    reg_we_check[48] = intr_src_addr_8_gated_we;
+    reg_we_check[49] = intr_src_addr_9_gated_we;
+    reg_we_check[50] = intr_src_addr_10_gated_we;
+    reg_we_check[51] = intr_src_wr_val_0_gated_we;
+    reg_we_check[52] = intr_src_wr_val_1_gated_we;
+    reg_we_check[53] = intr_src_wr_val_2_gated_we;
+    reg_we_check[54] = intr_src_wr_val_3_gated_we;
+    reg_we_check[55] = intr_src_wr_val_4_gated_we;
+    reg_we_check[56] = intr_src_wr_val_5_gated_we;
+    reg_we_check[57] = intr_src_wr_val_6_gated_we;
+    reg_we_check[58] = intr_src_wr_val_7_gated_we;
+    reg_we_check[59] = intr_src_wr_val_8_gated_we;
+    reg_we_check[60] = intr_src_wr_val_9_gated_we;
+    reg_we_check[61] = intr_src_wr_val_10_gated_we;
+    reg_we_check[62] = clear_intr_asid_0_gated_we;
+    reg_we_check[63] = clear_intr_asid_1_gated_we;
+    reg_we_check[64] = clear_intr_asid_2_gated_we;
+    reg_we_check[65] = clear_intr_asid_3_gated_we;
+    reg_we_check[66] = clear_intr_asid_4_gated_we;
+    reg_we_check[67] = clear_intr_asid_5_gated_we;
+    reg_we_check[68] = clear_intr_asid_6_gated_we;
+    reg_we_check[69] = clear_intr_asid_7_gated_we;
+    reg_we_check[70] = clear_intr_asid_8_gated_we;
+    reg_we_check[71] = clear_intr_asid_9_gated_we;
+    reg_we_check[72] = clear_intr_asid_10_gated_we;
   end
 
   // Read data return
@@ -3489,8 +3920,8 @@ module dma_reg_top
       end
 
       racl_addr_hit_read[8]: begin
-        reg_rdata_next[3:0] = addr_space_id_src_asid_qs;
-        reg_rdata_next[7:4] = addr_space_id_dst_asid_qs;
+        reg_rdata_next[7:0] = addr_space_id_src_asid_qs;
+        reg_rdata_next[15:8] = addr_space_id_dst_asid_qs;
       end
 
       racl_addr_hit_read[9]: begin
@@ -3637,95 +4068,135 @@ module dma_reg_top
       end
 
       racl_addr_hit_read[40]: begin
-        reg_rdata_next[10:0] = clear_intr_bus_qs;
-      end
-
-      racl_addr_hit_read[41]: begin
         reg_rdata_next[31:0] = intr_src_addr_0_qs;
       end
 
-      racl_addr_hit_read[42]: begin
+      racl_addr_hit_read[41]: begin
         reg_rdata_next[31:0] = intr_src_addr_1_qs;
       end
 
-      racl_addr_hit_read[43]: begin
+      racl_addr_hit_read[42]: begin
         reg_rdata_next[31:0] = intr_src_addr_2_qs;
       end
 
-      racl_addr_hit_read[44]: begin
+      racl_addr_hit_read[43]: begin
         reg_rdata_next[31:0] = intr_src_addr_3_qs;
       end
 
-      racl_addr_hit_read[45]: begin
+      racl_addr_hit_read[44]: begin
         reg_rdata_next[31:0] = intr_src_addr_4_qs;
       end
 
-      racl_addr_hit_read[46]: begin
+      racl_addr_hit_read[45]: begin
         reg_rdata_next[31:0] = intr_src_addr_5_qs;
       end
 
-      racl_addr_hit_read[47]: begin
+      racl_addr_hit_read[46]: begin
         reg_rdata_next[31:0] = intr_src_addr_6_qs;
       end
 
-      racl_addr_hit_read[48]: begin
+      racl_addr_hit_read[47]: begin
         reg_rdata_next[31:0] = intr_src_addr_7_qs;
       end
 
-      racl_addr_hit_read[49]: begin
+      racl_addr_hit_read[48]: begin
         reg_rdata_next[31:0] = intr_src_addr_8_qs;
       end
 
-      racl_addr_hit_read[50]: begin
+      racl_addr_hit_read[49]: begin
         reg_rdata_next[31:0] = intr_src_addr_9_qs;
       end
 
-      racl_addr_hit_read[51]: begin
+      racl_addr_hit_read[50]: begin
         reg_rdata_next[31:0] = intr_src_addr_10_qs;
       end
 
-      racl_addr_hit_read[52]: begin
+      racl_addr_hit_read[51]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_0_qs;
       end
 
-      racl_addr_hit_read[53]: begin
+      racl_addr_hit_read[52]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_1_qs;
       end
 
-      racl_addr_hit_read[54]: begin
+      racl_addr_hit_read[53]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_2_qs;
       end
 
-      racl_addr_hit_read[55]: begin
+      racl_addr_hit_read[54]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_3_qs;
       end
 
-      racl_addr_hit_read[56]: begin
+      racl_addr_hit_read[55]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_4_qs;
       end
 
-      racl_addr_hit_read[57]: begin
+      racl_addr_hit_read[56]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_5_qs;
       end
 
-      racl_addr_hit_read[58]: begin
+      racl_addr_hit_read[57]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_6_qs;
       end
 
-      racl_addr_hit_read[59]: begin
+      racl_addr_hit_read[58]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_7_qs;
       end
 
-      racl_addr_hit_read[60]: begin
+      racl_addr_hit_read[59]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_8_qs;
       end
 
-      racl_addr_hit_read[61]: begin
+      racl_addr_hit_read[60]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_9_qs;
       end
 
-      racl_addr_hit_read[62]: begin
+      racl_addr_hit_read[61]: begin
         reg_rdata_next[31:0] = intr_src_wr_val_10_qs;
+      end
+
+      racl_addr_hit_read[62]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_0_qs;
+      end
+
+      racl_addr_hit_read[63]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_1_qs;
+      end
+
+      racl_addr_hit_read[64]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_2_qs;
+      end
+
+      racl_addr_hit_read[65]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_3_qs;
+      end
+
+      racl_addr_hit_read[66]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_4_qs;
+      end
+
+      racl_addr_hit_read[67]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_5_qs;
+      end
+
+      racl_addr_hit_read[68]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_6_qs;
+      end
+
+      racl_addr_hit_read[69]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_7_qs;
+      end
+
+      racl_addr_hit_read[70]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_8_qs;
+      end
+
+      racl_addr_hit_read[71]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_9_qs;
+      end
+
+      racl_addr_hit_read[72]: begin
+        reg_rdata_next[7:0] = clear_intr_asid_10_qs;
       end
 
       default: begin

@@ -241,47 +241,73 @@
       ]
     }
     { name: "ADDR_SPACE_ID"
-      desc: "Address spaces that source and destination pointers refer to."
+      desc: "Encoded source/destination port IDs. Only IDs configured in PortDesc are accepted; zero and all-ones are invalid. Encodings have minimum Hamming distance four."
       swaccess: "rw"
       hwaccess: "hro"
       regwen: "CFG_REGWEN"
       fields: [
-        { bits: "3:0"
+        { bits: "7:0"
           name: "src_asid"
-          resval: 0x7
+          resval: 0x03
           desc: "Target address space that the source address pointer refers to."
           enum: [
-            { value: "0x7"
+            { value: "0x03"
               name: "OT_ADDR"
               desc: "Secure 32-bit internal bus."
             }
-            { value: "0xa"
+            { value: "0x0c"
               name: "SOC_ADDR"
               desc: "SoC control register bus using 32-bit (or 64 bits if configured by an SoC) control port."
             }
-            { value: "0x9"
+            { value: "0x30"
               name: "SYS_ADDR"
               desc: "SoC system address bus using 64 bit SYS port."
             }
+            { value: "0x3f", name: "ASID_3", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x56", name: "ASID_4", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x59", name: "ASID_5", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x65", name: "ASID_6", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x6a", name: "ASID_7", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x95", name: "ASID_8", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x9a", name: "ASID_9", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xa6", name: "ASID_10", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xa9", name: "ASID_11", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xc0", name: "ASID_12", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xcf", name: "ASID_13", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xf3", name: "ASID_14", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xfc", name: "ASID_15", desc: "Reserved unless assigned in the port descriptors." }
           ]
         }
-        { bits: "7:4"
+        { bits: "15:8"
           name: "dst_asid"
-          resval: 0x7
+          resval: 0x03
           desc: "Target address space that the destination address pointer refers to."
           enum: [
-            { value: "0x7"
+            { value: "0x03"
               name: "OT_ADDR"
               desc: "Secure 32-bit internal bus."
             }
-            { value: "0xa"
+            { value: "0x0c"
               name: "SOC_ADDR"
               desc: "SoC control register bus using 32-bit (or 64 bits if configured by an SoC) control port."
             }
-            { value: "0x9"
+            { value: "0x30"
               name: "SYS_ADDR"
               desc: "SoC system address bus using 64 bit SYS port."
             }
+            { value: "0x3f", name: "ASID_3", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x56", name: "ASID_4", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x59", name: "ASID_5", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x65", name: "ASID_6", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x6a", name: "ASID_7", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x95", name: "ASID_8", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0x9a", name: "ASID_9", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xa6", name: "ASID_10", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xa9", name: "ASID_11", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xc0", name: "ASID_12", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xcf", name: "ASID_13", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xf3", name: "ASID_14", desc: "Reserved unless assigned in the port descriptors." }
+            { value: "0xfc", name: "ASID_15", desc: "Reserved unless assigned in the port descriptors." }
           ]
         }
       ]
@@ -768,22 +794,6 @@
         }
       ]
     }
-    { name: "CLEAR_INTR_BUS"
-      desc: '''Bus selection bit where the clearing command should be performed."
-            0: CTN/System fabric
-            1: secure-side internal crossbar
-            '''
-      swaccess: "rw"
-      hwaccess: "hro"
-      regwen: "CFG_REGWEN"
-      fields: [
-        { name: "bus"
-          desc: "Bus selection bit for source N."
-          bits: "NumIntClearSources-1:0"
-          resval: 0x0
-        }
-      ]
-    }
     { multireg: {
         name: "INTR_SRC_ADDR"
         desc: "Destination address for interrupt source clearing write."
@@ -816,6 +826,20 @@
             bits: "31:0"
             resval: 0x0
           }
+        ]
+      }
+    }
+    { multireg: {
+        name: "CLEAR_INTR_ASID"
+        desc: "Encoded target port ID for each interrupt-clearing write. An enabled source with an unconfigured or invalid ASID raises asid_error without issuing that write."
+        count: "NumIntClearSources"
+        cname: "SOURCE"
+        compact: "false"
+        swaccess: "rw"
+        hwaccess: "hro"
+        regwen: "CFG_REGWEN"
+        fields: [
+          { name: "asid", desc: "Target ASID from the ADDR_SPACE_ID codebook.", bits: "7:0", resval: "0" }
         ]
       }
     }

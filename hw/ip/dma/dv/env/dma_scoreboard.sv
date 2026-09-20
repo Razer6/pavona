@@ -413,10 +413,8 @@ class dma_scoreboard extends cip_base_scoreboard #(
       end else begin
         // Write to 'Clear Interrupt' address, so check the value written and the bus to which the
         // write has been sent.
-        // `clear_intr_bus[i]` set -> OT-internal bus, else SoC Control bus.
         string exp_name;
-        exp_name = dma_config.clear_intr_bus[intr_source] ? cfg.asid_names[OtInternalAddr]
-                                                          : cfg.asid_names[SocControlAddr];
+        exp_name = cfg.asid_names[dma_config.clear_intr_asid[intr_source]];
 
         `uvm_info(`gfn, $sformatf("Clear Interrupt write of 0x%0x to address 0x%0x",
                                   item.a_data, item.a_addr), UVM_HIGH)
@@ -1024,8 +1022,19 @@ class dma_scoreboard extends cip_base_scoreboard #(
         `uvm_info(`gfn, $sformatf("Got transfer_width = %s",
                                   dma_config.per_transfer_width.name()), UVM_HIGH)
       end
-      "clear_intr_bus": begin
-        dma_config.clear_intr_bus = `gmv(ral.clear_intr_bus.bus);
+      "clear_intr_asid_0",
+      "clear_intr_asid_1",
+      "clear_intr_asid_2",
+      "clear_intr_asid_3",
+      "clear_intr_asid_4",
+      "clear_intr_asid_5",
+      "clear_intr_asid_6",
+      "clear_intr_asid_7",
+      "clear_intr_asid_8",
+      "clear_intr_asid_9",
+      "clear_intr_asid_10": begin
+        int index = get_index_from_reg_name(csr.get_name());
+        dma_config.clear_intr_asid[index] = asid_encoding_e'(item.a_data[ASID_WIDTH-1:0]);
       end
       "clear_intr_src": begin
         dma_config.clear_intr_src = `gmv(ral.clear_intr_src.source);
@@ -1166,10 +1175,13 @@ class dma_scoreboard extends cip_base_scoreboard #(
           // Capture the interrupt-related configuration.
           cov.config_cg.sample(.dma_config(dma_config),
                                .initial_transfer(initial_transfer));
+          foreach (dma_config.clear_intr_asid[i]) begin
+            if (dma_config.clear_intr_src[i])
+              cov.clear_asid_cg.sample(dma_config.clear_intr_asid[i]);
+          end
           cov.interrupt_cg.sample(
             .handshake_interrupt_enable(dma_config.handshake_intr_en),
-            .clear_intr_src(dma_config.clear_intr_src),
-            .clear_intr_bus(dma_config.clear_intr_bus)
+            .clear_intr_src(dma_config.clear_intr_src)
           );
         end
       end
@@ -1366,7 +1378,18 @@ class dma_scoreboard extends cip_base_scoreboard #(
       // These configuration registers should all be predictable.
       "addr_space_id", "total_data_size", "chunk_data_size", "transfer_width",
       "src_config", "dst_config",
-      "handshake_intr_enable", "clear_intr_src", "clear_intr_bus",
+      "handshake_intr_enable", "clear_intr_src",
+      "clear_intr_asid_0",
+      "clear_intr_asid_1",
+      "clear_intr_asid_2",
+      "clear_intr_asid_3",
+      "clear_intr_asid_4",
+      "clear_intr_asid_5",
+      "clear_intr_asid_6",
+      "clear_intr_asid_7",
+      "clear_intr_asid_8",
+      "clear_intr_asid_9",
+      "clear_intr_asid_10",
       "intr_src_addr_0",
       "intr_src_addr_1",
       "intr_src_addr_2",

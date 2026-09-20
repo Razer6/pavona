@@ -123,7 +123,7 @@ hardware handshake DMA operation.
     receive FIFO read out register.
 -   [*Destination address*](registers.md#dst_addr_lo): address to the memory
     buffer where received data is placed.
--   [*Address space ID*](registers.md#addr_space_id) (ASID): (Secure/Internal, CTN or System)
+-   [*Address space ID*](registers.md#addr_space_id) (ASID): encoded configured port ID
 
     -   Source ASID: Specify the address space in which the LSIO FIFO is
         visible.
@@ -185,7 +185,7 @@ hardware handshake DMA operation.
     memory buffer.
 -   [*Destination address*](registers.md#dst_addr_lo): pointer to the FIFO
     register.
--   [*Address space ID*](registers.md#addr_space_id) (ASID): (Secure/Internal, CTN or System)
+-   [*Address space ID*](registers.md#addr_space_id) (ASID): encoded configured port ID
 
     -   Source ASID: Specify the address space in which the source
         buffer resides.

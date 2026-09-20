@@ -23,14 +23,32 @@ extern "C" {
 // Target Address space that the source address pointer refers to.
 typedef enum dif_dma_address_space_id {
   /* OpenTitan 32 bit internal bus. */
-  kDifDmaOpentitanInternalBus = 0x07,
+  kDifDmaOpentitanInternalBus = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_OT_ADDR,
 
   /* SoC control register address bus using 32 bit (or 64 bits if configured by
      an SoC) CTN port .*/
-  kDifDmaSoCControlRegisterBus = 0x0a,
+  kDifDmaSoCControlRegisterBus = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_SOC_ADDR,
 
   /* SoC system address bus using 64 bit SYS port. */
-  kDifDmaSoCSystemBus = 0x09,
+  kDifDmaSoCSystemBus = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_SYS_ADDR,
+
+  /* Generic IDs; usable only if assigned to a port in the integration. */
+  kDifDmaAsid0 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_OT_ADDR,
+  kDifDmaAsid1 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_SOC_ADDR,
+  kDifDmaAsid2 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_SYS_ADDR,
+  kDifDmaAsid3 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_3,
+  kDifDmaAsid4 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_4,
+  kDifDmaAsid5 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_5,
+  kDifDmaAsid6 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_6,
+  kDifDmaAsid7 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_7,
+  kDifDmaAsid8 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_8,
+  kDifDmaAsid9 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_9,
+  kDifDmaAsid10 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_10,
+  kDifDmaAsid11 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_11,
+  kDifDmaAsid12 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_12,
+  kDifDmaAsid13 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_13,
+  kDifDmaAsid14 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_14,
+  kDifDmaAsid15 = DMA_ADDR_SPACE_ID_SRC_ASID_VALUE_ASID_15,
 } dif_dma_address_space_id_t;
 
 /* Supported transaction widths by the DMA */
@@ -347,18 +365,19 @@ dif_result_t dif_dma_handshake_clear_irq(const dif_dma_t *dma,
                                          uint32_t clear_state);
 
 /**
- * Select the bus interface for the interrupt clearing mechanism.
- * 0: CTN/System fabric
- * 1: OT-internal crossbar
+ * Select the encoded target port for one interrupt-clearing source.
+ * The integration must configure a port with this ASID; otherwise the hardware
+ * reports an ASID error when the enabled source is cleared.
  *
  * @param dma A DMA Controller handle.
- * @param clear_irq_bus Bus selection for the clearing mechanism. The bit
- * position corresponds to the IRQ index.
+ * @param source Zero-based interrupt source number (not a byte offset).
+ * @param asid Target port's encoded ASID.
  * @return The result of the operation.
  */
 OT_WARN_UNUSED_RESULT
-dif_result_t dif_dma_handshake_clear_irq_bus(const dif_dma_t *dma,
-                                             uint32_t clear_irq_bus);
+dif_result_t dif_dma_handshake_clear_irq_asid(const dif_dma_t *dma,
+                                            uint32_t source,
+                                            dif_dma_address_space_id_t asid);
 
 /**
  * Address index for every interrupt. Used to configure the write address and

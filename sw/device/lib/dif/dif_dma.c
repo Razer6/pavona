@@ -301,13 +301,36 @@ dif_result_t dif_dma_handshake_clear_irq(const dif_dma_t *dma,
   return kDifOk;
 }
 
-dif_result_t dif_dma_handshake_clear_irq_bus(const dif_dma_t *dma,
-                                             uint32_t clear_irq_bus) {
-  if (dma == NULL) {
+dif_result_t dif_dma_handshake_clear_irq_asid(const dif_dma_t *dma,
+                                            uint32_t source,
+                                            dif_dma_address_space_id_t asid) {
+  if (dma == NULL || source >= DMA_PARAM_NUM_INT_CLEAR_SOURCES) {
     return kDifBadArg;
   }
-  mmio_region_write32(dma->base_addr, DMA_CLEAR_INTR_BUS_REG_OFFSET,
-                      clear_irq_bus);
+  switch (asid) {
+    case kDifDmaAsid0:
+    case kDifDmaAsid1:
+    case kDifDmaAsid2:
+    case kDifDmaAsid3:
+    case kDifDmaAsid4:
+    case kDifDmaAsid5:
+    case kDifDmaAsid6:
+    case kDifDmaAsid7:
+    case kDifDmaAsid8:
+    case kDifDmaAsid9:
+    case kDifDmaAsid10:
+    case kDifDmaAsid11:
+    case kDifDmaAsid12:
+    case kDifDmaAsid13:
+    case kDifDmaAsid14:
+    case kDifDmaAsid15:
+      break;
+    default:
+      return kDifBadArg;
+  }
+  mmio_region_write32(dma->base_addr,
+                      DMA_CLEAR_INTR_ASID_0_REG_OFFSET + (ptrdiff_t)(4 * source),
+                      (uint32_t)asid);
 
   return kDifOk;
 }

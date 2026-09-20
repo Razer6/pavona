@@ -638,13 +638,39 @@ TEST_F(HandshakeClearIrqTest, BadArg) {
 class HandshakeClearBusTest : public DmaTestInitialized {};
 
 TEST_F(HandshakeClearBusTest, Success) {
-  EXPECT_WRITE32(DMA_CLEAR_INTR_BUS_REG_OFFSET, 0x2);
-
-  EXPECT_DIF_OK(dif_dma_handshake_clear_irq_bus(&dma_, 0x2));
+  EXPECT_WRITE32(DMA_CLEAR_INTR_ASID_0_REG_OFFSET + 8, kDifDmaAsid15);
+  EXPECT_DIF_OK(dif_dma_handshake_clear_irq_asid(&dma_, 2, kDifDmaAsid15));
 }
 
 TEST_F(HandshakeClearBusTest, BadArg) {
-  EXPECT_DIF_BADARG(dif_dma_handshake_clear_irq_bus(nullptr, 0x2));
+  EXPECT_DIF_BADARG(dif_dma_handshake_clear_irq_asid(nullptr, 2, kDifDmaAsid0));
+  EXPECT_DIF_BADARG(dif_dma_handshake_clear_irq_asid(
+      &dma_, DMA_PARAM_NUM_INT_CLEAR_SOURCES, kDifDmaAsid0));
+  EXPECT_DIF_BADARG(dif_dma_handshake_clear_irq_asid(
+      &dma_, 0, static_cast<dif_dma_address_space_id_t>(0)));
+  EXPECT_DIF_BADARG(dif_dma_handshake_clear_irq_asid(
+      &dma_, 0, static_cast<dif_dma_address_space_id_t>(0xff)));
+}
+
+TEST_F(HandshakeClearBusTest, AllEncodingsAndSources) {
+  constexpr dif_dma_address_space_id_t ids[] = {
+      kDifDmaAsid0, kDifDmaAsid1, kDifDmaAsid2, kDifDmaAsid3,
+      kDifDmaAsid4, kDifDmaAsid5, kDifDmaAsid6, kDifDmaAsid7,
+      kDifDmaAsid8, kDifDmaAsid9, kDifDmaAsid10, kDifDmaAsid11,
+      kDifDmaAsid12, kDifDmaAsid13, kDifDmaAsid14, kDifDmaAsid15};
+  for (uint32_t source = 0; source < DMA_PARAM_NUM_INT_CLEAR_SOURCES; ++source) {
+    for (uint32_t value = 0; value < 256; ++value) {
+      bool valid = false;
+      for (auto id : ids) valid |= value == static_cast<uint32_t>(id);
+      auto asid = static_cast<dif_dma_address_space_id_t>(value);
+      if (valid) {
+        EXPECT_WRITE32(DMA_CLEAR_INTR_ASID_0_REG_OFFSET + 4 * source, value);
+        EXPECT_DIF_OK(dif_dma_handshake_clear_irq_asid(&dma_, source, asid));
+      } else {
+        EXPECT_DIF_BADARG(dif_dma_handshake_clear_irq_asid(&dma_, source, asid));
+      }
+    }
+  }
 }
 
 typedef struct dma_clear_irq_reg {
